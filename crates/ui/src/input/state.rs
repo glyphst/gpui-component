@@ -1391,8 +1391,12 @@ impl InputState {
             }
         }
 
+        let exit_offset = self
+            .active_span_edit
+            .as_ref()
+            .map_or(active_range.end, |range| range.end);
         self.active_span_edit = None;
-        self.move_to(self.selected_range.end, None, cx);
+        self.move_to(exit_offset, None, cx);
         cx.notify();
         true
     }
@@ -3620,13 +3624,21 @@ mod tests {
             input.update(cx, |state, cx| {
                 assert!(state.activate_span_edit(span_range.clone(), window, cx));
                 state.replace("999", window, cx);
-                assert!(state.finish_span_edit(window, cx));
+                state.enter(
+                    &Enter {
+                        secondary: false,
+                        shift: false,
+                    },
+                    window,
+                    cx,
+                );
             });
         });
 
         input.read_with(&cx, |state, _| {
             assert_eq!(state.value().as_ref(), "Ask @page(20)");
             assert!(state.active_span_edit.is_none());
+            assert_eq!(state.cursor(), state.value().len());
         });
     }
 

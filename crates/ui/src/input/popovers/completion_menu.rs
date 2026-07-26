@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
-    Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement, Pixels, Point,
-    Render, RenderOnce, SharedString, Styled, StyledText, Subscription, Window, deferred, div,
-    prelude::FluentBuilder, px, relative,
+    Action, Anchor, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity,
+    EventEmitter, Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement,
+    Pixels, Point, Render, RenderOnce, SharedString, Styled, StyledText, Subscription, Window,
+    anchored, deferred, div, prelude::FluentBuilder, px, relative,
 };
 use lsp_types::{CompletionItem, CompletionTextEdit};
 
@@ -413,49 +413,48 @@ impl Render for CompletionMenu {
             .selected_item()
             .and_then(|item| item.documentation.clone());
 
-        let max_width = MAX_MENU_WIDTH.min(window.bounds().size.width - pos.x);
         let abs_pos = self.editor.read(cx).input_bounds.origin + pos;
+        let max_width = MAX_MENU_WIDTH.min(window.viewport_size().width);
         let vertical_layout =
             abs_pos.x + MAX_MENU_WIDTH + POPOVER_GAP + MAX_MENU_WIDTH + POPOVER_GAP
-                > window.bounds().size.width;
+                > window.viewport_size().width;
 
         deferred(
-            div()
-                .absolute()
-                .left(pos.x)
-                .top(pos.y)
-                .flex()
-                .flex_row()
-                .gap(POPOVER_GAP)
-                .items_start()
-                .when(vertical_layout, |this| this.flex_col())
-                .child(
-                    editor_popover("completion-menu", cx)
-                        .max_w(max_width)
-                        .min_w(px(120.))
-                        .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
-                )
-                .when_some(selected_documentation, |this, documentation| {
-                    let mut doc = match documentation {
-                        lsp_types::Documentation::String(s) => s.clone(),
-                        lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
-                    };
-                    if vertical_layout {
-                        doc = doc.split("\n").next().unwrap_or_default().to_string();
-                    }
-
-                    this.child(
-                        div().child(
-                            editor_popover("completion-menu", cx)
-                                .w(MAX_MENU_WIDTH)
-                                .px_2()
-                                .child(render_markdown("doc", doc, window, cx)),
-                        ),
+            anchored().position(abs_pos).anchor(Anchor::TopLeft).child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(POPOVER_GAP)
+                    .items_start()
+                    .when(vertical_layout, |this| this.flex_col())
+                    .child(
+                        editor_popover("completion-menu", cx)
+                            .max_w(max_width)
+                            .min_w(px(120.).min(max_width))
+                            .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
                     )
-                })
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.hide(cx);
-                })),
+                    .when_some(selected_documentation, |this, documentation| {
+                        let mut doc = match documentation {
+                            lsp_types::Documentation::String(s) => s.clone(),
+                            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+                        };
+                        if vertical_layout {
+                            doc = doc.split("\n").next().unwrap_or_default().to_string();
+                        }
+
+                        this.child(
+                            div().child(
+                                editor_popover("completion-menu", cx)
+                                    .w(MAX_MENU_WIDTH.min(max_width))
+                                    .px_2()
+                                    .child(render_markdown("doc", doc, window, cx)),
+                            ),
+                        )
+                    })
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.hide(cx);
+                    })),
+            ),
         )
         .into_any_element()
     }
