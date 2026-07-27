@@ -64,7 +64,7 @@ impl InputState {
     pub(super) fn move_vertical(
         &mut self,
         move_lines: isize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.mode.is_single_line() {
@@ -144,25 +144,28 @@ impl InputState {
         self.move_to(new_offset, Some(direction), cx);
         // Set back the preferred_column
         self.preferred_column = was_preferred_column;
+        self.handle_completion_cursor_move(window, cx);
         cx.notify();
     }
 
-    pub(super) fn left(&mut self, _: &MoveLeft, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn left(&mut self, _: &MoveLeft, window: &mut Window, cx: &mut Context<Self>) {
         self.pause_blink_cursor(cx);
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor()), None, cx);
         } else {
             self.move_to(self.selected_range.start, None, cx)
         }
+        self.handle_completion_cursor_move(window, cx);
     }
 
-    pub(super) fn right(&mut self, _: &MoveRight, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn right(&mut self, _: &MoveRight, window: &mut Window, cx: &mut Context<Self>) {
         self.pause_blink_cursor(cx);
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), None, cx);
         } else {
             self.move_to(self.selected_range.end, None, cx)
         }
+        self.handle_completion_cursor_move(window, cx);
     }
 
     pub(super) fn up(&mut self, action: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -237,49 +240,60 @@ impl InputState {
         self.move_vertical(display_lines, window, cx);
     }
 
-    pub(super) fn home(&mut self, _: &MoveHome, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn home(&mut self, _: &MoveHome, window: &mut Window, cx: &mut Context<Self>) {
         self.pause_blink_cursor(cx);
         let offset = self.start_of_line();
         self.move_to(offset, Some(MoveDirection::Up), cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 
-    pub(super) fn end(&mut self, _: &MoveEnd, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn end(&mut self, _: &MoveEnd, window: &mut Window, cx: &mut Context<Self>) {
         self.pause_blink_cursor(cx);
         let offset = self.end_of_line();
         self.move_to(offset, Some(MoveDirection::Down), cx);
         self.cursor_line_end_affinity = true;
+        self.handle_completion_cursor_move(window, cx);
     }
 
     pub(super) fn move_to_start(
         &mut self,
         _: &MoveToStart,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_to(0, None, cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 
-    pub(super) fn move_to_end(&mut self, _: &MoveToEnd, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn move_to_end(
+        &mut self,
+        _: &MoveToEnd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.move_to(self.text.len(), None, cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 
     pub(super) fn move_to_previous_word(
         &mut self,
         _: &MoveToPreviousWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let offset = self.previous_start_of_word();
         self.move_to(offset, None, cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 
     pub(super) fn move_to_next_word(
         &mut self,
         _: &MoveToNextWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let offset = self.next_end_of_word();
         self.move_to(offset, None, cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 }

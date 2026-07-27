@@ -29,6 +29,8 @@ pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
+const SPAN_VERTICAL_INSET: Pixels = px(2.);
+const SPAN_EDITABLE_VERTICAL_INSET: Pixels = px(3.);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
@@ -754,6 +756,7 @@ impl TextElement {
             let fragments = Self::layout_range_fragments(&span.display_range, last_layout, bounds);
             for fragment in fragments {
                 hitboxes.push(window.insert_hitbox(fragment, HitboxBehavior::Normal));
+                let fragment = Self::inset_span_fragment(fragment, SPAN_VERTICAL_INSET);
                 span_quads.push(quad(
                     fragment,
                     Corners::all(px(4.)).clamp_radii_for_quad_size(fragment.size),
@@ -774,6 +777,8 @@ impl TextElement {
                     Self::layout_range_fragments(editable_range, last_layout, bounds)
                         .into_iter()
                         .map(|fragment| {
+                            let fragment =
+                                Self::inset_span_fragment(fragment, SPAN_EDITABLE_VERTICAL_INSET);
                             quad(
                                 fragment,
                                 Corners::all(px(3.)).clamp_radii_for_quad_size(fragment.size),
@@ -797,11 +802,21 @@ impl TextElement {
                 .into_iter()
                 .next()
             {
-                icons.push((slot, icon_path));
+                icons.push((
+                    Self::inset_span_fragment(slot, SPAN_VERTICAL_INSET),
+                    icon_path,
+                ));
             }
         }
 
         (span_quads, editable_quads, icons, hitboxes)
+    }
+
+    fn inset_span_fragment(mut fragment: Bounds<Pixels>, inset: Pixels) -> Bounds<Pixels> {
+        let inset = inset.max(px(0.)).min(fragment.size.height.half());
+        fragment.origin.y += inset;
+        fragment.size.height -= inset * 2.;
+        fragment
     }
 
     fn layout_search_matches(
@@ -2602,6 +2617,20 @@ fn split_runs_by_bg_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn span_fragments_leave_room_above_and_below_the_caret() {
+        let fragment = Bounds::new(point(px(10.), px(20.)), size(px(80.), px(20.)));
+
+        assert_eq!(
+            TextElement::inset_span_fragment(fragment, px(2.)),
+            Bounds::new(point(px(10.), px(22.)), size(px(80.), px(16.)))
+        );
+        assert_eq!(
+            TextElement::inset_span_fragment(fragment, px(3.)),
+            Bounds::new(point(px(10.), px(23.)), size(px(80.), px(14.)))
+        );
+    }
 
     #[test]
     fn test_editor_scrollbar_layout_uses_current_scroll_size() {

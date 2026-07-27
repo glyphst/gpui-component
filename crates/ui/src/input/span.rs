@@ -369,6 +369,11 @@ mod tests {
             presentation.source_offset(presentation.display_offset(selection_end)),
             selection_end
         );
+        let selection_display_range = &presentation.spans()[1].display_range;
+        assert!(
+            presentation.display_offset(selection_end) > selection_display_range.end,
+            "the caret at a span boundary must remain outside the painted pill"
+        );
     }
 
     #[test]

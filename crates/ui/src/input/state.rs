@@ -1278,6 +1278,7 @@ impl InputState {
         self.move_to(offset, None, cx);
         self.update_preferred_column();
         self.focus(window, cx);
+        self.handle_completion_cursor_move(window, cx);
     }
 
     /// Focus the input field.
@@ -2073,7 +2074,8 @@ impl InputState {
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else {
-            self.move_to(offset, None, cx)
+            self.move_to(offset, None, cx);
+            self.handle_completion_cursor_move(window, cx);
         }
     }
 
@@ -3549,8 +3551,50 @@ impl Render for InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::{CompletionProvider, CompletionTriggerEvent};
     use crate::theme::Theme;
     use gpui::{TestAppContext, VisualTestContext};
+    use lsp_types::{CompletionContext, CompletionResponse};
+    use std::{cell::RefCell, rc::Rc};
+
+    struct AtCompletionProvider {
+        cursor_move_ranges: Rc<RefCell<Vec<Range<usize>>>>,
+    }
+
+    impl CompletionProvider for AtCompletionProvider {
+        fn completions(
+            &self,
+            _: &Rope,
+            _: usize,
+            _: CompletionContext,
+            _: &mut Window,
+            _: &mut Context<InputState>,
+        ) -> Task<Result<CompletionResponse>> {
+            Task::ready(Ok(CompletionResponse::Array(vec![CompletionItem {
+                label: "@selection".into(),
+                ..Default::default()
+            }])))
+        }
+
+        fn completion_trigger_range(
+            &self,
+            text: &Rope,
+            cursor: usize,
+            event: CompletionTriggerEvent<'_>,
+            _: &mut Context<InputState>,
+        ) -> Option<Range<usize>> {
+            let prefix = text.slice(..cursor.min(text.len())).to_string();
+            let start = prefix.rfind('@')?;
+            let range = start..cursor;
+            if prefix[start..].chars().any(char::is_whitespace) {
+                return None;
+            }
+            if matches!(event, CompletionTriggerEvent::CursorMoved) {
+                self.cursor_move_ranges.borrow_mut().push(range.clone());
+            }
+            Some(range)
+        }
+    }
 
     struct InputView {
         input: Entity<InputState>,
@@ -3588,6 +3632,36 @@ mod tests {
                 window_handle: window,
             }
         }
+    }
+
+    #[gpui::test]
+    fn moving_back_before_space_reopens_completion_for_the_active_range(cx: &mut TestAppContext) {
+        let cursor_move_ranges = Rc::new(RefCell::new(Vec::new()));
+        let provider = Rc::new(AtCompletionProvider {
+            cursor_move_ranges: cursor_move_ranges.clone(),
+        });
+        let input_view = InputView::build(cx, move |mut state| {
+            state.lsp.completion_provider = Some(provider);
+            state
+        });
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("@ ", window, cx);
+                state.focus(window, cx);
+                state.left(&MoveLeft, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        input.read_with(&cx, |state, cx| {
+            assert_eq!(state.value().as_ref(), "@ ");
+            assert_eq!(state.cursor(), 1);
+            assert!(state.is_context_menu_open(cx));
+        });
+        assert_eq!(cursor_move_ranges.borrow().as_slice(), &[0..1]);
     }
 
     #[gpui::test]

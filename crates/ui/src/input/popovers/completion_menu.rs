@@ -8,14 +8,22 @@ use gpui::{
 };
 use lsp_types::{CompletionItem, CompletionTextEdit};
 
-const MAX_MENU_WIDTH: Pixels = px(320.);
 const MAX_MENU_HEIGHT: Pixels = px(240.);
 const POPOVER_GAP: Pixels = px(4.);
+
+fn resolve_menu_widths(options: CompletionMenuOptions, viewport_width: Pixels) -> (Pixels, Pixels) {
+    let max_width = options
+        .max_width
+        .max(px(0.))
+        .min(viewport_width.max(px(0.)));
+    let min_width = options.min_width.max(px(0.)).min(max_width);
+    (min_width, max_width)
+}
 
 use crate::{
     ActiveTheme, IndexPath, Selectable, actions, h_flex,
     input::{
-        self, InputEvent, InputState, RopeExt,
+        self, CompletionMenuOptions, InputEvent, InputState, RopeExt,
         popovers::{editor_popover, render_markdown},
     },
     label::Label,
@@ -173,6 +181,7 @@ pub struct CompletionMenu {
     editor: Entity<InputState>,
     list: Entity<ListState<ContextMenuDelegate>>,
     open: bool,
+    options: CompletionMenuOptions,
 
     /// The offset of the first character that triggered the completion.
     pub(crate) trigger_start_offset: Option<usize>,
@@ -186,6 +195,7 @@ impl CompletionMenu {
     /// NOTE: This element should not call from InputState::new, unless that will stack overflow.
     pub(crate) fn new(
         editor: Entity<InputState>,
+        options: CompletionMenuOptions,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -218,6 +228,7 @@ impl CompletionMenu {
                 editor,
                 list,
                 open: false,
+                options,
                 trigger_start_offset: None,
                 query: SharedString::default(),
                 _subscriptions,
@@ -414,10 +425,10 @@ impl Render for CompletionMenu {
             .and_then(|item| item.documentation.clone());
 
         let abs_pos = self.editor.read(cx).input_bounds.origin + pos;
-        let max_width = MAX_MENU_WIDTH.min(window.viewport_size().width);
-        let vertical_layout =
-            abs_pos.x + MAX_MENU_WIDTH + POPOVER_GAP + MAX_MENU_WIDTH + POPOVER_GAP
-                > window.viewport_size().width;
+        let (min_width, max_width) =
+            resolve_menu_widths(self.options, window.viewport_size().width);
+        let vertical_layout = abs_pos.x + max_width + POPOVER_GAP + max_width + POPOVER_GAP
+            > window.viewport_size().width;
 
         deferred(
             anchored().position(abs_pos).anchor(Anchor::TopLeft).child(
@@ -430,7 +441,7 @@ impl Render for CompletionMenu {
                     .child(
                         editor_popover("completion-menu", cx)
                             .max_w(max_width)
-                            .min_w(px(120.).min(max_width))
+                            .min_w(min_width)
                             .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
                     )
                     .when_some(selected_documentation, |this, documentation| {
@@ -445,7 +456,7 @@ impl Render for CompletionMenu {
                         this.child(
                             div().child(
                                 editor_popover("completion-menu", cx)
-                                    .w(MAX_MENU_WIDTH.min(max_width))
+                                    .w(max_width)
                                     .px_2()
                                     .child(render_markdown("doc", doc, window, cx)),
                             ),
@@ -457,5 +468,22 @@ impl Render for CompletionMenu {
             ),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_menu_widths_are_clamped_to_the_viewport() {
+        let options = CompletionMenuOptions {
+            min_width: px(280.),
+            max_width: px(540.),
+        };
+
+        assert_eq!(resolve_menu_widths(options, px(800.)), (px(280.), px(540.)));
+        assert_eq!(resolve_menu_widths(options, px(360.)), (px(280.), px(360.)));
+        assert_eq!(resolve_menu_widths(options, px(240.)), (px(240.), px(240.)));
     }
 }

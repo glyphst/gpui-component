@@ -1,5 +1,5 @@
 use anyhow::Result;
-use gpui::{Context, EntityInputHandler, Task, Window};
+use gpui::{Context, EntityInputHandler, Pixels, Task, Window, px};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionResponse, InlineCompletionContext,
     InlineCompletionItem, InlineCompletionResponse, InlineCompletionTriggerKind,
@@ -15,6 +15,36 @@ use crate::input::{
 
 /// Default debounce duration for inline completions.
 const DEFAULT_INLINE_COMPLETION_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// The input event that is asking a completion provider to establish a query range.
+#[derive(Clone, Copy, Debug)]
+pub enum CompletionTriggerEvent<'a> {
+    /// The input replaced `replaced_range` with `inserted_text`.
+    TextEdit {
+        replaced_range: &'a Range<usize>,
+        inserted_text: &'a str,
+    },
+    /// The caret moved without changing the input text.
+    CursorMoved,
+}
+
+/// Width constraints for a completion menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompletionMenuOptions {
+    /// The preferred minimum width, clamped to the viewport.
+    pub min_width: Pixels,
+    /// The maximum width for both the menu and its documentation panel.
+    pub max_width: Pixels,
+}
+
+impl Default for CompletionMenuOptions {
+    fn default() -> Self {
+        Self {
+            min_width: px(120.),
+            max_width: px(320.),
+        }
+    }
+}
 
 /// A trait for providing code completions based on the current input state and context.
 pub trait CompletionProvider {
@@ -76,15 +106,47 @@ pub trait CompletionProvider {
         Task::ready(Ok(false))
     }
 
-    /// Determines if the completion should be triggered based on the given byte offset.
+    /// Determines whether a text edit should trigger menu completions.
     ///
-    /// This is called on the main thread.
+    /// Providers that need full-document or caret-movement context can
+    /// override [`Self::completion_trigger_range`] instead.
     fn is_completion_trigger(
         &self,
-        offset: usize,
-        new_text: &str,
+        _offset: usize,
+        _new_text: &str,
+        _cx: &mut Context<InputState>,
+    ) -> bool {
+        false
+    }
+
+    /// Returns the active completion query range for the current input event.
+    ///
+    /// The range uses UTF-8 byte offsets into `text` and must end at `cursor`.
+    /// Returning `None` closes any open completion menu. Providers that do not
+    /// complete on caret movement should return `None` for
+    /// [`CompletionTriggerEvent::CursorMoved`].
+    fn completion_trigger_range(
+        &self,
+        _text: &Rope,
+        cursor: usize,
+        event: CompletionTriggerEvent<'_>,
         cx: &mut Context<InputState>,
-    ) -> bool;
+    ) -> Option<Range<usize>> {
+        match event {
+            CompletionTriggerEvent::TextEdit {
+                replaced_range,
+                inserted_text,
+            } if self.is_completion_trigger(replaced_range.end, inserted_text, cx) => {
+                Some(replaced_range.end..cursor)
+            }
+            CompletionTriggerEvent::TextEdit { .. } | CompletionTriggerEvent::CursorMoved => None,
+        }
+    }
+
+    /// Returns the width constraints used by this provider's completion menu.
+    fn completion_menu_options(&self) -> CompletionMenuOptions {
+        CompletionMenuOptions::default()
+    }
 }
 
 pub(crate) struct InlineCompletion {
@@ -123,10 +185,75 @@ impl InputState {
         // It will check if menu is open before showing the suggestion.
         self.schedule_inline_completion(window, cx);
 
-        let start = range.end;
-        let new_offset = self.cursor();
+        let cursor = self.cursor();
+        let Some(trigger_range) = provider.completion_trigger_range(
+            &self.text,
+            cursor,
+            CompletionTriggerEvent::TextEdit {
+                replaced_range: range,
+                inserted_text: new_text,
+            },
+            cx,
+        ) else {
+            self.hide_context_menu(cx);
+            return;
+        };
+        self.request_menu_completions(provider, trigger_range, window, cx);
+    }
 
-        if !provider.is_completion_trigger(start, new_text, cx) {
+    /// Re-evaluate menu completions after a user-visible caret move.
+    pub(in crate::input) fn handle_completion_cursor_move(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.completion_inserting
+            || !self.selected_range.is_empty()
+            || !self.focus_handle.is_focused(window)
+        {
+            return;
+        }
+
+        let Some(provider) = self.lsp.completion_provider.clone() else {
+            return;
+        };
+        let cursor = self.cursor();
+        let Some(trigger_range) = provider.completion_trigger_range(
+            &self.text,
+            cursor,
+            CompletionTriggerEvent::CursorMoved,
+            cx,
+        ) else {
+            self.hide_context_menu(cx);
+            return;
+        };
+        let trigger_changed = self
+            .context_menu_content
+            .as_ref()
+            .and_then(|menu| match menu {
+                ContextMenu::Completion(menu) => menu.read(cx).trigger_start_offset,
+                ContextMenu::CodeAction(_) => None,
+            })
+            .is_some_and(|start| start != trigger_range.start);
+        if trigger_changed {
+            self.hide_context_menu(cx);
+        }
+        self.request_menu_completions(provider, trigger_range, window, cx);
+    }
+
+    fn request_menu_completions(
+        &mut self,
+        provider: Rc<dyn CompletionProvider>,
+        trigger_range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let new_offset = self.cursor();
+        if trigger_range.start > new_offset
+            || trigger_range.end != new_offset
+            || trigger_range.end > self.text.len()
+        {
+            self.hide_context_menu(cx);
             return;
         }
 
@@ -139,14 +266,23 @@ impl InputState {
         let menu = match menu {
             Some(menu) => menu.clone(),
             None => {
-                let menu = CompletionMenu::new(cx.entity(), window, cx);
+                let menu = CompletionMenu::new(
+                    cx.entity(),
+                    provider.completion_menu_options(),
+                    window,
+                    cx,
+                );
                 self.context_menu_content = Some(ContextMenu::Completion(menu.clone()));
                 menu
             }
         };
 
-        let start_offset = menu.read(cx).trigger_start_offset.unwrap_or(start);
+        let start_offset = menu
+            .read(cx)
+            .trigger_start_offset
+            .unwrap_or(trigger_range.start);
         if new_offset < start_offset {
+            self.hide_context_menu(cx);
             return;
         }
 
