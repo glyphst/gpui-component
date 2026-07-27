@@ -20,6 +20,9 @@ use crate::{
     h_flex, v_flex,
 };
 
+/// Default lifetime for automatically hidden notifications.
+pub const DEFAULT_NOTIFICATION_AUTOHIDE_DURATION: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Copy, Default)]
 pub enum NotificationType {
     #[default]
@@ -70,7 +73,7 @@ pub struct Notification {
     title: Option<SharedString>,
     message: Option<SharedString>,
     icon: Option<Icon>,
-    autohide: bool,
+    autohide_after: Option<Duration>,
     action_builder: Option<Rc<dyn Fn(&mut Self, &mut Window, &mut Context<Self>) -> Button>>,
     content_builder: Option<Rc<dyn Fn(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement>>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -128,7 +131,7 @@ impl Notification {
             message: None,
             type_: None,
             icon: None,
-            autohide: true,
+            autohide_after: Some(DEFAULT_NOTIFICATION_AUTOHIDE_DURATION),
             action_builder: None,
             content_builder: None,
             on_click: None,
@@ -212,7 +215,13 @@ impl Notification {
 
     /// Set the auto hide of the notification, default is true.
     pub fn autohide(mut self, autohide: bool) -> Self {
-        self.autohide = autohide;
+        self.autohide_after = autohide.then_some(DEFAULT_NOTIFICATION_AUTOHIDE_DURATION);
+        self
+    }
+
+    /// Automatically hide the notification after a custom duration.
+    pub fn autohide_after(mut self, duration: Duration) -> Self {
+        self.autohide_after = Some(duration);
         self
     }
 
@@ -242,7 +251,7 @@ impl Notification {
         F: Fn(&mut Self, &mut Window, &mut Context<Self>) -> Button + 'static,
     {
         self.action_builder = Some(Rc::new(action));
-        self.autohide = false;
+        self.autohide_after = None;
         self
     }
 
@@ -472,7 +481,7 @@ impl NotificationList {
     ) {
         let notification = notification.into();
         let id = notification.id.clone();
-        let autohide = notification.autohide;
+        let autohide_after = notification.autohide_after;
 
         // Remove the notification by id, for keep unique.
         self.notifications.retain(|note| note.read(cx).id != id);
@@ -488,10 +497,9 @@ impl NotificationList {
         );
 
         self.notifications.push_back(notification.clone());
-        if autohide {
-            // Sleep for 5 seconds to autohide the notification
+        if let Some(duration) = autohide_after {
             cx.spawn_in(window, async move |_, cx| {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
+                cx.background_executor().timer(duration).await;
 
                 if let Err(err) =
                     notification.update_in(cx, |note, window, cx| note.dismiss(window, cx))
@@ -609,6 +617,21 @@ mod tests {
 
     struct FooKind;
     struct BarKind;
+
+    #[test]
+    fn autohide_supports_default_disabled_and_custom_durations() {
+        assert_eq!(
+            Notification::new().autohide_after,
+            Some(DEFAULT_NOTIFICATION_AUTOHIDE_DURATION)
+        );
+        assert_eq!(Notification::new().autohide(false).autohide_after, None);
+
+        let custom = Duration::from_secs(10);
+        assert_eq!(
+            Notification::new().autohide_after(custom).autohide_after,
+            Some(custom)
+        );
+    }
 
     struct TestRoot {
         list: Entity<NotificationList>,
