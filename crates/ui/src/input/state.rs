@@ -31,6 +31,7 @@ use super::{
     mode::InputMode,
     number_input,
     number_input::{NumberStep, StepAction},
+    span::{InputPresentation, InputSpan, InputSpanEditMode},
 };
 use crate::Size;
 use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
@@ -131,6 +132,14 @@ pub enum InputEvent {
         item: CompletionItem,
         replaced_range: Range<usize>,
         inserted_range: Range<usize>,
+    },
+    /// The rich span under the pointer changed.
+    ///
+    /// The range uses UTF-8 byte offsets into the canonical input value.
+    /// `bounds` is the span's currently rendered window-space bounds.
+    SpanHoverChanged {
+        span_range: Option<Range<usize>>,
+        bounds: Option<Bounds<Pixels>>,
     },
     PressEnter {
         secondary: bool,
@@ -409,6 +418,14 @@ pub struct InputState {
     pub(super) editor_scrollbar_paddings: Cell<Edges<Pixels>>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) text_align: TextAlign,
+    /// Source-backed rich spans rendered in the input.
+    pub(super) spans: Vec<InputSpan>,
+    /// Projection from the canonical source to the rendered rich text.
+    pub(super) presentation: InputPresentation,
+    /// Source range of the rich span whose editable subrange is active.
+    pub(super) active_span_edit: Option<Range<usize>>,
+    /// Source range of the rich span currently under the pointer.
+    hovered_span: Option<Range<usize>>,
 
     /// The mask pattern for formatting the input text
     pub(crate) mask_pattern: MaskPattern,
@@ -545,6 +562,10 @@ impl InputState {
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             text_align: TextAlign::Left,
+            spans: Vec::new(),
+            presentation: InputPresentation::new(&Rope::new(), &[]),
+            active_span_edit: None,
+            hovered_span: None,
             lsp: Lsp::default(),
             diagnostic_popover: None,
             context_menu_content: None,
@@ -770,6 +791,7 @@ impl InputState {
         &self,
         offset: usize,
     ) -> (usize, usize, Option<Point<Pixels>>) {
+        let offset = self.display_offset_for_source(offset);
         let Some(last_layout) = &self.last_layout else {
             return (0, 0, None);
         };
@@ -1204,6 +1226,7 @@ impl InputState {
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         let text: SharedString = value.into();
         self.text = Rope::from(text.as_str());
+        self.presentation = InputPresentation::new(&self.text, &self.spans);
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -1281,6 +1304,205 @@ impl InputState {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self._pending_update = true;
         cx.notify();
+    }
+
+    /// Set source-backed rich spans to render inside the input.
+    ///
+    /// Span and editable ranges use UTF-8 byte offsets into [`Self::value`].
+    /// Invalid, overlapping, or multi-line spans are ignored by the
+    /// presentation layer. The canonical input value is never rewritten.
+    pub fn set_spans(&mut self, spans: Vec<InputSpan>, cx: &mut Context<Self>) {
+        self.spans = spans;
+        if self.active_span_edit.as_ref().is_some_and(|active| {
+            !self
+                .spans
+                .iter()
+                .any(|span| span.range == *active && span.editable.is_some())
+        }) {
+            self.active_span_edit = None;
+        }
+        self.rebuild_presentation(cx);
+        cx.notify();
+    }
+
+    /// Return the source-backed rich spans currently configured on the input.
+    pub fn spans(&self) -> &[InputSpan] {
+        &self.spans
+    }
+
+    /// Select and activate a span's editable source range.
+    ///
+    /// Returns `false` when `span_range` does not identify an editable span.
+    pub fn activate_span_edit(
+        &mut self,
+        span_range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editable_range) = self
+            .spans
+            .iter()
+            .find(|span| span.range == span_range)
+            .and_then(|span| span.editable.as_ref())
+            .map(|editable| editable.range.clone())
+        else {
+            return false;
+        };
+
+        self.active_span_edit = Some(span_range);
+        self.set_selected_range(editable_range, cx);
+        self.focus(window, cx);
+        true
+    }
+
+    /// Finish an active rich-span edit, clamping its value when necessary.
+    ///
+    /// Returns `true` when a span edit was active. Callers can use this to
+    /// consume Enter before performing a surrounding form submission.
+    pub fn finish_span_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(active_range) = self.active_span_edit.clone() else {
+            return false;
+        };
+        let Some((editable_range, mode)) = self
+            .spans
+            .iter()
+            .find(|span| span.range == active_range)
+            .and_then(|span| span.editable.as_ref())
+            .map(|editable| (editable.range.clone(), editable.mode.clone()))
+        else {
+            self.active_span_edit = None;
+            return true;
+        };
+
+        match mode {
+            InputSpanEditMode::UnsignedInteger { min, max } => {
+                let current = self
+                    .text
+                    .slice(editable_range.clone())
+                    .to_string()
+                    .parse::<usize>()
+                    .unwrap_or(min)
+                    .clamp(min, max);
+                let current = current.to_string();
+                if self.text.slice(editable_range.clone()).to_string() != current {
+                    let range_utf16 = self.range_to_utf16(&editable_range);
+                    self.replace_text_in_range_silent(Some(range_utf16), &current, window, cx);
+                }
+            }
+        }
+
+        self.active_span_edit = None;
+        self.move_to(self.selected_range.end, None, cx);
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn source_offset_for_display(&self, offset: usize) -> usize {
+        self.presentation.source_offset(offset)
+    }
+
+    pub(crate) fn display_offset_for_source(&self, offset: usize) -> usize {
+        self.presentation.display_offset(offset)
+    }
+
+    pub(crate) fn display_range_for_source(&self, range: &Range<usize>) -> Range<usize> {
+        self.presentation.display_range(range)
+    }
+
+    pub(crate) fn presentation_text(&self) -> &Rope {
+        self.presentation.text()
+    }
+
+    fn rebuild_presentation(&mut self, cx: &mut Context<Self>) {
+        self.presentation = InputPresentation::new(&self.text, &self.spans);
+        self.display_map.set_text(self.presentation.text(), cx);
+        self.mode.update_auto_grow(&self.display_map);
+    }
+
+    fn active_editable_for_range(
+        &self,
+        range: &Range<usize>,
+    ) -> Option<(Range<usize>, InputSpanEditMode)> {
+        let active = self.active_span_edit.as_ref()?;
+        let editable = self
+            .spans
+            .iter()
+            .find(|span| &span.range == active)?
+            .editable
+            .as_ref()?;
+        (range.start >= editable.range.start && range.end <= editable.range.end)
+            .then(|| (editable.range.clone(), editable.mode.clone()))
+    }
+
+    fn constrain_edit_range_to_spans(&self, mut range: Range<usize>) -> Range<usize> {
+        if range.is_empty() || self.active_editable_for_range(&range).is_some() {
+            return range;
+        }
+
+        for span in &self.spans {
+            if range.start < span.range.end && range.end > span.range.start {
+                range.start = range.start.min(span.range.start);
+                range.end = range.end.max(span.range.end);
+            }
+        }
+        range
+    }
+
+    fn adjust_spans_for_edit(
+        &mut self,
+        range: &Range<usize>,
+        inserted_len: usize,
+        active_editable_range: Option<Range<usize>>,
+    ) {
+        let removed_len = range.len();
+        let shift_offset = |offset: usize| {
+            if inserted_len >= removed_len {
+                offset.saturating_add(inserted_len - removed_len)
+            } else {
+                offset.saturating_sub(removed_len - inserted_len)
+            }
+        };
+
+        let active = self.active_span_edit.clone();
+        let mut next_active = active.clone();
+        self.spans.retain_mut(|span| {
+            let old_span_range = span.range.clone();
+            let editing_active_span = active.as_ref() == Some(&span.range)
+                && active_editable_range.as_ref().is_some_and(|editable| {
+                    range.start >= editable.start && range.end <= editable.end
+                });
+
+            if editing_active_span {
+                span.range.end = shift_offset(span.range.end);
+                if let Some(editable) = span.editable.as_mut() {
+                    editable.range.end = shift_offset(editable.range.end);
+                }
+                next_active = Some(span.range.clone());
+                return true;
+            }
+
+            if span.range.end <= range.start {
+                return true;
+            }
+            if span.range.start >= range.end {
+                span.range.start = shift_offset(span.range.start);
+                span.range.end = shift_offset(span.range.end);
+                if let Some(editable) = span.editable.as_mut() {
+                    editable.range.start = shift_offset(editable.range.start);
+                    editable.range.end = shift_offset(editable.range.end);
+                }
+                if active.as_ref() == Some(&old_span_range) {
+                    next_active = Some(span.range.clone());
+                }
+                return true;
+            }
+
+            if active.as_ref() == Some(&old_span_range) {
+                next_active = None;
+            }
+            false
+        });
+        self.active_span_edit = next_active;
     }
 
     pub(super) fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -1632,6 +1854,10 @@ impl InputState {
             return;
         }
 
+        if self.finish_span_edit(window, cx) {
+            return;
+        }
+
         // Clear inline completion on enter (user chose not to accept it)
         if self.has_inline_completion() {
             self.clear_inline_completion(cx);
@@ -1789,10 +2015,20 @@ impl InputState {
         }
 
         self.selecting = true;
-        let offset = self.index_for_mouse_position(event.position);
+        let mut offset = self.index_for_mouse_position(event.position);
 
         if self.handle_click_hover_definition(event, offset, window, cx) {
             return;
+        }
+
+        let mut clicked_span = self.span_at_position(event.position);
+        if event.button == MouseButton::Left
+            && self.active_span_edit.is_some()
+            && self.active_span_edit != clicked_span
+        {
+            self.finish_span_edit(window, cx);
+            offset = self.index_for_mouse_position(event.position);
+            clicked_span = self.span_at_position(event.position);
         }
 
         // Triple click to select line
@@ -1803,6 +2039,10 @@ impl InputState {
 
         // Double click to select word
         if event.button == MouseButton::Left && event.click_count == 2 {
+            if let Some(span_range) = clicked_span {
+                self.set_selected_range(span_range, cx);
+                return;
+            }
             self.select_word(offset, window, cx);
             return;
         }
@@ -1815,6 +2055,14 @@ impl InputState {
                 }
                 self.pending_context_menu = Some((event.position, offset));
             }
+            return;
+        }
+
+        if event.button == MouseButton::Left
+            && let Some(span_range) = clicked_span
+            && self.active_span_edit.as_ref() != Some(&span_range)
+            && self.activate_span_edit(span_range, window, cx)
+        {
             return;
         }
 
@@ -1859,12 +2107,14 @@ impl InputState {
 
         if !within_bounds {
             // Clear hover when mouse leaves the input
+            self.update_span_hover(None, cx);
             self.clear_hover_state(cx);
             return;
         }
 
         // Show diagnostic popover on mouse move
         let offset = self.index_for_mouse_position(event.position);
+        self.update_span_hover(self.span_at_position(event.position), cx);
         self.handle_mouse_move(offset, event, window, cx);
 
         if self.mode.is_code_editor() {
@@ -1968,6 +2218,8 @@ impl InputState {
         let line_height = last_layout.line_height;
 
         let point = self.text.offset_to_point(offset);
+        let display_offset = self.display_offset_for_source(offset);
+        let display_line_start = self.presentation_text().line_start_offset(point.row);
 
         let row = point.row;
 
@@ -1986,7 +2238,11 @@ impl InputState {
             .get(row.saturating_sub(last_layout.visible_range.start))
         {
             // Check to scroll horizontally and soft wrap lines
-            if let Some(pos) = line.position_for_index(point.column, last_layout, false) {
+            if let Some(pos) = line.position_for_index(
+                display_offset.saturating_sub(display_line_start),
+                last_layout,
+                false,
+            ) {
                 let bounds_width = bounds.size.width - last_layout.line_number_width;
                 let col_offset_x = pos.x;
                 row_offset_y += pos.y;
@@ -2223,7 +2479,7 @@ impl InputState {
                 return if self.masked {
                     self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
                 } else {
-                    index.min(self.text.len())
+                    self.source_offset_for_display(index)
                 };
             }
 
@@ -2233,7 +2489,7 @@ impl InputState {
                 return if self.masked {
                     self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
                 } else {
-                    index.min(self.text.len())
+                    self.source_offset_for_display(index)
                 };
             } else if pos.y < px(0.) {
                 // Mouse is above this line, return start of this line
@@ -2241,7 +2497,7 @@ impl InputState {
                     self.text
                         .char_index_to_offset(line_start_offset / MASK_CHAR.len_utf8())
                 } else {
-                    line_start_offset
+                    self.source_offset_for_display(line_start_offset)
                 };
             }
 
@@ -2250,6 +2506,28 @@ impl InputState {
 
         // Mouse is below all visible lines, return end of text
         self.text.len()
+    }
+
+    fn span_at_position(&self, position: Point<Pixels>) -> Option<Range<usize>> {
+        self.presentation.spans().iter().find_map(|span| {
+            let bounds = self.range_to_bounds(&span.source_range)?;
+            bounds
+                .contains(&position)
+                .then(|| span.source_range.clone())
+        })
+    }
+
+    fn update_span_hover(&mut self, span_range: Option<Range<usize>>, cx: &mut Context<Self>) {
+        if self.hovered_span == span_range {
+            return;
+        }
+
+        self.hovered_span = span_range.clone();
+        let bounds = span_range
+            .as_ref()
+            .and_then(|range| self.range_to_bounds(range));
+        cx.emit(InputEvent::SpanHoverChanged { span_range, bounds });
+        cx.notify();
     }
 
     /// Returns a y offsetted point for the line origin.
@@ -2344,6 +2622,21 @@ impl InputState {
     }
 
     pub(super) fn previous_boundary(&self, offset: usize) -> usize {
+        if let Some(span) = self
+            .spans
+            .iter()
+            .find(|span| span.range.start < offset && offset <= span.range.end)
+        {
+            if self.active_span_edit.as_ref() == Some(&span.range)
+                && let Some(editable) = span.editable.as_ref()
+                && editable.range.start < offset
+                && offset <= editable.range.end
+            {
+                return self.text.clip_offset(offset.saturating_sub(1), Bias::Left);
+            }
+            return span.range.start;
+        }
+
         let mut offset = self.text.clip_offset(offset.saturating_sub(1), Bias::Left);
         if let Some(ch) = self.text.char_at(offset) {
             if ch == '\r' {
@@ -2355,6 +2648,21 @@ impl InputState {
     }
 
     pub(super) fn next_boundary(&self, offset: usize) -> usize {
+        if let Some(span) = self
+            .spans
+            .iter()
+            .find(|span| span.range.start <= offset && offset < span.range.end)
+        {
+            if self.active_span_edit.as_ref() == Some(&span.range)
+                && let Some(editable) = span.editable.as_ref()
+                && editable.range.start <= offset
+                && offset < editable.range.end
+            {
+                return self.text.clip_offset(offset + 1, Bias::Right);
+            }
+            return span.range.end;
+        }
+
         let mut offset = self.text.clip_offset(offset + 1, Bias::Right);
         if let Some(ch) = self.text.char_at(offset) {
             if ch == '\r' {
@@ -2398,6 +2706,7 @@ impl InputState {
         Root::update(window, cx, |root, _, _| {
             root.focused_input = None;
         });
+        self.finish_span_edit(window, cx);
         self.clamp_number_value(window, cx);
         cx.emit(InputEvent::Blur);
         cx.notify();
@@ -2896,8 +3205,7 @@ impl EntityInputHandler for InputState {
         // NOTE: The normalization keeps the UTF-16 length, but may change the
         // UTF-8 byte length, so all the byte-offset calculations below must
         // use the normalized text.
-        let new_text = self.normalize_input(new_text);
-        let new_text: &str = &new_text;
+        let mut new_text = self.normalize_input(new_text).into_owned();
 
         let range = range_utf16
             .as_ref()
@@ -2907,8 +3215,27 @@ impl EntityInputHandler for InputState {
                 self.range_from_utf16(&range)
             }))
             .unwrap_or(self.selected_range.into());
+        let range = self.constrain_edit_range_to_spans(range);
+        let active_editable = self.active_editable_for_range(&range);
+        if matches!(
+            &active_editable,
+            Some((_, InputSpanEditMode::UnsignedInteger { .. }))
+        ) && !new_text.is_empty()
+        {
+            let digits = new_text
+                .bytes()
+                .filter(u8::is_ascii_digit)
+                .map(char::from)
+                .collect::<String>();
+            if digits.is_empty() {
+                return;
+            }
+            new_text = digits;
+        }
+        let new_text: &str = &new_text;
 
         let old_text = self.text.clone();
+        let had_spans = !self.spans.is_empty();
         self.text.replace(range.clone(), new_text);
 
         let mut new_offset = (range.start + new_text.len()).min(self.text.len());
@@ -2953,11 +3280,21 @@ impl EntityInputHandler for InputState {
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
-        // Adjust folds before updating wrap map: remove overlapping folds and shift others
-        self.display_map
-            .adjust_folds_for_edit(&old_text, &range, new_text);
-        self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        self.adjust_spans_for_edit(
+            &range,
+            new_text.len(),
+            active_editable.map(|(range, _)| range),
+        );
+        if had_spans {
+            self.rebuild_presentation(cx);
+        } else {
+            self.presentation = InputPresentation::new(&self.text, &[]);
+            // Adjust folds before updating wrap map: remove overlapping folds and shift others
+            self.display_map
+                .adjust_folds_for_edit(&old_text, &range, new_text);
+            self.display_map
+                .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        }
 
         let bg = self
             .mode
@@ -2998,8 +3335,7 @@ impl EntityInputHandler for InputState {
         self.lsp.reset();
 
         // See the same NOTE in `replace_text_in_range`.
-        let new_text = self.normalize_input(new_text);
-        let new_text: &str = &new_text;
+        let mut new_text = self.normalize_input(new_text).into_owned();
 
         let range = range_utf16
             .as_ref()
@@ -3009,8 +3345,27 @@ impl EntityInputHandler for InputState {
                 self.range_from_utf16(&range)
             }))
             .unwrap_or(self.selected_range.into());
+        let range = self.constrain_edit_range_to_spans(range);
+        let active_editable = self.active_editable_for_range(&range);
+        if matches!(
+            &active_editable,
+            Some((_, InputSpanEditMode::UnsignedInteger { .. }))
+        ) && !new_text.is_empty()
+        {
+            let digits = new_text
+                .bytes()
+                .filter(u8::is_ascii_digit)
+                .map(char::from)
+                .collect::<String>();
+            if digits.is_empty() {
+                return;
+            }
+            new_text = digits;
+        }
+        let new_text: &str = &new_text;
 
         let old_text = self.text.clone();
+        let had_spans = !self.spans.is_empty();
         self.text.replace(range.clone(), new_text);
 
         if self.mode.is_single_line() {
@@ -3027,11 +3382,21 @@ impl EntityInputHandler for InputState {
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
-        // Adjust folds before updating wrap map: remove overlapping folds and shift others
-        self.display_map
-            .adjust_folds_for_edit(&old_text, &range, new_text);
-        self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        self.adjust_spans_for_edit(
+            &range,
+            new_text.len(),
+            active_editable.map(|(range, _)| range),
+        );
+        if had_spans {
+            self.rebuild_presentation(cx);
+        } else {
+            self.presentation = InputPresentation::new(&self.text, &[]);
+            // Adjust folds before updating wrap map: remove overlapping folds and shift others
+            self.display_map
+                .adjust_folds_for_edit(&old_text, &range, new_text);
+            self.display_map
+                .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        }
 
         let bg = self
             .mode
@@ -3072,7 +3437,8 @@ impl EntityInputHandler for InputState {
         let last_layout = self.last_layout.as_ref()?;
         let line_height = last_layout.line_height;
         let line_number_width = last_layout.line_number_width;
-        let range = self.range_from_utf16(&range_utf16);
+        let source_range = self.range_from_utf16(&range_utf16);
+        let range = self.display_range_for_source(&source_range);
 
         let mut start_origin = None;
         let mut end_origin = None;
@@ -3133,7 +3499,8 @@ impl EntityInputHandler for InputState {
         for (vi, line) in last_layout.lines.iter().enumerate() {
             let offset = last_layout.visible_line_byte_offsets[vi];
             if let Some(utf8_index) = line.index_for_position(line_point, last_layout) {
-                return Some(self.offset_to_utf16(offset + utf8_index));
+                let source_offset = self.source_offset_for_display(offset + utf8_index);
+                return Some(self.offset_to_utf16(source_offset));
             }
         }
 
@@ -3217,6 +3584,50 @@ mod tests {
                 window_handle: window,
             }
         }
+    }
+
+    #[gpui::test]
+    fn rich_spans_preserve_source_and_clamp_editable_integer(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.auto_grow(1, 4));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let source = "Ask @page(12)";
+        let span_range = 4..source.len();
+        let digits_range = 10..12;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(source, window, cx);
+                state.set_spans(
+                    vec![
+                        InputSpan::new(span_range.clone(), "page").editable_unsigned_integer(
+                            digits_range,
+                            1,
+                            20,
+                        ),
+                    ],
+                    cx,
+                );
+            });
+        });
+
+        input.read_with(&cx, |state, _| {
+            assert_eq!(state.value().as_ref(), source);
+            assert_ne!(state.presentation_text().to_string(), source);
+        });
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                assert!(state.activate_span_edit(span_range.clone(), window, cx));
+                state.replace("999", window, cx);
+                assert!(state.finish_span_edit(window, cx));
+            });
+        });
+
+        input.read_with(&cx, |state, _| {
+            assert_eq!(state.value().as_ref(), "Ask @page(20)");
+            assert!(state.active_span_edit.is_none());
+        });
     }
 
     #[gpui::test]

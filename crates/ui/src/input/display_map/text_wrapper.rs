@@ -150,6 +150,13 @@ impl TextWrapper {
         self.text = text.clone();
     }
 
+    pub(crate) fn reset_text(&mut self, text: &Rope, cx: &mut App) {
+        self.text = Rope::new();
+        self.lines = SumTree::new(&());
+        self._initialized = true;
+        self.update_all(text, cx);
+    }
+
     /// Get reference to the rope text.
     #[inline]
     pub(crate) fn text(&self) -> &Rope {

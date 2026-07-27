@@ -25,7 +25,10 @@ impl InputState {
             return;
         };
 
-        let Some(pos) = line.position_for_index(point.column, last_layout, false) else {
+        let display_line_start = self.presentation_text().line_start_offset(point.row);
+        let display_offset = self.display_offset_for_source(self.cursor());
+        let display_column = display_offset.saturating_sub(display_line_start);
+        let Some(pos) = line.position_for_index(display_column, last_layout, false) else {
             self.preferred_column = None;
             return;
         };
@@ -74,7 +77,10 @@ impl InputState {
         let offset = self.cursor();
         let was_preferred_column = self.preferred_column;
 
-        let mut display_point = self.display_map.offset_to_wrap_display_point(offset);
+        let display_offset = self.display_offset_for_source(offset);
+        let mut display_point = self
+            .display_map
+            .offset_to_wrap_display_point(display_offset);
 
         // Convert wrap row → display row (skips folded rows), move, then convert back
         let current_display_row = self
@@ -95,16 +101,19 @@ impl InputState {
 
         display_point.row = target_wrap_row;
         display_point.column = 0;
-        let mut new_offset = self.display_map.wrap_display_point_to_offset(display_point);
+        let mut new_display_offset = self.display_map.wrap_display_point_to_offset(display_point);
+        let mut new_offset = self.source_offset_for_display(new_display_offset);
 
         if let Some((preferred_x, column)) = was_preferred_column {
             // Get display point again to update local_row.
-            let mut next_display_point = self.display_map.offset_to_wrap_display_point(new_offset);
+            let mut next_display_point = self
+                .display_map
+                .offset_to_wrap_display_point(new_display_offset);
             next_display_point.column = 0;
             let next_point = self
                 .display_map
                 .wrap_display_point_to_point(next_display_point);
-            let line_start_offset = self.text.line_start_offset(next_point.row);
+            let display_line_start = self.presentation_text().line_start_offset(next_point.row);
 
             // If in visible range, prefer to use position to get column.
             if let Some(line) = last_layout.line(next_point.row) {
@@ -115,12 +124,14 @@ impl InputState {
                     },
                     last_layout,
                 ) {
-                    new_offset = line_start_offset + x;
+                    new_display_offset = display_line_start + x;
+                    new_offset = self.source_offset_for_display(new_display_offset);
                 }
             } else {
                 // Not in visible range, use column directly.
-                let max_line_len = self.text.slice_line(next_point.row).len();
-                new_offset = line_start_offset + column.min(max_line_len);
+                let max_line_len = self.presentation_text().slice_line(next_point.row).len();
+                new_display_offset = display_line_start + column.min(max_line_len);
+                new_offset = self.source_offset_for_display(new_display_offset);
             }
         }
 

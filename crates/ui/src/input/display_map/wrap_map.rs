@@ -127,8 +127,7 @@ impl WrapMap {
 
     /// Initialize with text
     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
-        self.wrapper.set_default_text(text);
-        self.wrapper.prepare_if_need(text, cx);
+        self.wrapper.reset_text(text, cx);
     }
 
     /// Get access to the underlying wrapper (for rendering/hit-testing)

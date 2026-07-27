@@ -5,10 +5,10 @@ use gpui::{
     GlobalElementId,
 };
 use gpui::{
-    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Position, ShapedLine,
-    SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle, UnderlineStyle, Window,
-    fill, point, px, relative, size,
+    BorderStyle, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement,
+    LayoutId, MouseButton, MouseMoveEvent, MouseUpEvent, PaintQuad, Path, Pixels, Point, Position,
+    ShapedLine, SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle,
+    TransformationMatrix, UnderlineStyle, Window, fill, point, px, quad, relative, size,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
@@ -354,6 +354,7 @@ impl TextElement {
         if let Some(ime_marked_range) = &state.ime_marked_range {
             selected_range = (ime_marked_range.end..ime_marked_range.end).into();
         }
+        let source_selected_range = selected_range;
         let is_selected_all = selected_range.len() == state.text.len();
 
         let mut cursor = state.cursor();
@@ -365,6 +366,10 @@ impl TextElement {
             selected_range.start = masked_display_offset(&state.text, selected_range.start);
             selected_range.end = masked_display_offset(&state.text, selected_range.end);
             cursor = masked_display_offset(&state.text, cursor);
+        } else {
+            selected_range.start = state.display_offset_for_source(selected_range.start);
+            selected_range.end = state.display_offset_for_source(selected_range.end);
+            cursor = state.display_offset_for_source(cursor);
         }
 
         let mut scroll_offset = state.scroll_handle.offset();
@@ -402,7 +407,7 @@ impl TextElement {
         let cursor_end = caret_for(sel_end_row, selected_range.end, false);
 
         let cursor_bounds = {
-            let selection_changed = state.last_selected_range != Some(selected_range);
+            let selection_changed = state.last_selected_range != Some(source_selected_range);
             let auto_scrolling = state.auto_scroll.is_active();
             if selection_changed && !is_selected_all {
                 // For Right alignment use 0 margin: cursor is clamped to bounds separately,
@@ -659,6 +664,146 @@ impl TextElement {
         builder.build().ok()
     }
 
+    fn layout_range_fragments(
+        range: &Range<usize>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        if range.is_empty() {
+            return Vec::new();
+        }
+
+        let mut fragments = Vec::new();
+        let mut line_top = last_layout.visible_top;
+        let text_origin = bounds.origin + point(last_layout.line_number_width, px(0.));
+
+        for (line_start, line) in last_layout
+            .visible_line_byte_offsets
+            .iter()
+            .copied()
+            .zip(last_layout.lines.iter())
+        {
+            let line_end = line_start + line.len();
+            if range.end <= line_start || range.start >= line_end {
+                line_top += line.size(last_layout.line_height).height;
+                continue;
+            }
+
+            let local_start = range.start.max(line_start).saturating_sub(line_start);
+            let local_end = range.end.min(line_end).saturating_sub(line_start);
+            let Some(start) = line.position_for_index(local_start, last_layout, false) else {
+                line_top += line.size(last_layout.line_height).height;
+                continue;
+            };
+            let Some(end) = line.position_for_index(local_end, last_layout, true) else {
+                line_top += line.size(last_layout.line_height).height;
+                continue;
+            };
+
+            let start_row = (start.y / last_layout.line_height) as usize;
+            let end_row = (end.y / last_layout.line_height) as usize;
+            let alignment = last_layout.alignment_offset(line.longest_width);
+            for row in start_row..=end_row {
+                let left = if row == start_row { start.x } else { alignment };
+                let right = if row == end_row {
+                    end.x
+                } else {
+                    alignment
+                        + line
+                            .wrapped_lines
+                            .get(row)
+                            .map_or(line.longest_width, |line| line.width)
+                };
+                if right <= left {
+                    continue;
+                }
+                fragments.push(Bounds::new(
+                    text_origin + point(left, line_top + last_layout.line_height * row as f32),
+                    size(right - left, last_layout.line_height),
+                ));
+            }
+
+            line_top += line.size(last_layout.line_height).height;
+        }
+
+        fragments
+    }
+
+    fn layout_spans(
+        state: &InputState,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        window: &mut Window,
+        primary: Hsla,
+    ) -> (
+        Vec<PaintQuad>,
+        Vec<PaintQuad>,
+        Vec<(Bounds<Pixels>, SharedString)>,
+        Vec<Hitbox>,
+    ) {
+        let mut span_quads = Vec::new();
+        let mut editable_quads = Vec::new();
+        let mut icons = Vec::new();
+        let mut hitboxes = Vec::new();
+        let disabled_opacity = if state.disabled { 0.5 } else { 1.0 };
+        let background = primary.opacity(0.10 * disabled_opacity);
+        let border = primary.opacity(0.38 * disabled_opacity);
+        let active_span = state.active_span_edit.as_ref();
+
+        for span in state.presentation.spans() {
+            let fragments = Self::layout_range_fragments(&span.display_range, last_layout, bounds);
+            for fragment in fragments {
+                hitboxes.push(window.insert_hitbox(fragment, HitboxBehavior::Normal));
+                span_quads.push(quad(
+                    fragment,
+                    Corners::all(px(4.)).clamp_radii_for_quad_size(fragment.size),
+                    background,
+                    Edges::all(px(1.)),
+                    border,
+                    BorderStyle::Solid,
+                ));
+            }
+
+            if let Some(editable_range) = span.editable_display_range.as_ref() {
+                let active = active_span == Some(&span.source_range);
+                let editable_background =
+                    primary.opacity((if active { 0.22 } else { 0.14 }) * disabled_opacity);
+                let editable_border =
+                    primary.opacity((if active { 0.80 } else { 0.46 }) * disabled_opacity);
+                editable_quads.extend(
+                    Self::layout_range_fragments(editable_range, last_layout, bounds)
+                        .into_iter()
+                        .map(|fragment| {
+                            quad(
+                                fragment,
+                                Corners::all(px(3.)).clamp_radii_for_quad_size(fragment.size),
+                                editable_background,
+                                Edges::all(px(1.)),
+                                editable_border,
+                                BorderStyle::Solid,
+                            )
+                        }),
+                );
+            }
+
+            if let (Some(icon_range), Some(icon_path)) = (
+                span.icon_range.as_ref(),
+                state
+                    .spans
+                    .iter()
+                    .find(|source_span| source_span.range == span.source_range)
+                    .and_then(|source_span| source_span.icon_path.clone()),
+            ) && let Some(slot) = Self::layout_range_fragments(icon_range, last_layout, bounds)
+                .into_iter()
+                .next()
+            {
+                icons.push((slot, icon_path));
+            }
+        }
+
+        (span_quads, editable_quads, icons, hitboxes)
+    }
+
     fn layout_search_matches(
         &self,
         last_layout: &LastLayout,
@@ -747,6 +892,9 @@ impl TextElement {
         if state.masked {
             selected_range.start = masked_display_offset(&state.text, selected_range.start);
             selected_range.end = masked_display_offset(&state.text, selected_range.end);
+        } else {
+            selected_range.start = state.display_offset_for_source(selected_range.start);
+            selected_range.end = state.display_offset_for_source(selected_range.end);
         }
 
         let (start_ix, end_ix) = if selected_range.start < selected_range.end {
@@ -1402,6 +1550,10 @@ pub(super) struct PrepaintState {
     /// First line of inline completion (painted after cursor on same line)
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
+    span_quads: Vec<PaintQuad>,
+    span_editable_quads: Vec<PaintQuad>,
+    span_icons: Vec<(Bounds<Pixels>, SharedString)>,
+    span_hitboxes: Vec<Hitbox>,
 }
 
 impl PrepaintState {
@@ -1510,12 +1662,16 @@ impl Element for TextElement {
 
         self.state.update(cx, |state, cx| {
             state.display_map.set_font(font, text_size, cx);
-            state.display_map.ensure_text_prepared(&state.text, cx);
+            let presentation_text = state.presentation_text().clone();
+            state
+                .display_map
+                .ensure_text_prepared(&presentation_text, cx);
         });
 
         let state = self.state.read(cx);
         let multi_line = state.mode.is_multi_line();
         let text = state.text.clone();
+        let presentation_text = state.presentation_text().clone();
         let is_empty = text.len() == 0;
         let placeholder = self.placeholder.clone();
 
@@ -1534,7 +1690,7 @@ impl Element for TextElement {
                 fg,
             )
         } else {
-            (&text, fg)
+            (&presentation_text, fg)
         };
 
         // Calculate the width of the line numbers
@@ -1560,28 +1716,86 @@ impl Element for TextElement {
             });
         }
 
-        let state = self.state.read(cx);
         let line_height = window.line_height();
 
-        let (visible_range, visible_buffer_lines, visible_top) =
-            self.calculate_visible_range(&state, line_height, bounds.size.height);
-        let visible_start_offset = state.text.line_start_offset(visible_range.start);
-        let visible_end_offset = state
-            .text
-            .line_end_offset(visible_range.end.saturating_sub(1));
+        let (
+            visible_range,
+            visible_buffer_lines,
+            visible_top,
+            source_visible_start_offset,
+            source_visible_end_offset,
+        ) = {
+            let state = self.state.read(cx);
+            let (visible_range, visible_buffer_lines, visible_top) =
+                self.calculate_visible_range(state, line_height, bounds.size.height);
+            let source_visible_start_offset = state.text.line_start_offset(visible_range.start);
+            let source_visible_end_offset = state
+                .text
+                .line_end_offset(visible_range.end.saturating_sub(1));
+            (
+                visible_range,
+                visible_buffer_lines,
+                visible_top,
+                source_visible_start_offset,
+                source_visible_end_offset,
+            )
+        };
+        let visible_start_offset = display_text.line_start_offset(visible_range.start);
+        let visible_end_offset = display_text.line_end_offset(visible_range.end.saturating_sub(1));
 
         let highlight_styles = self.highlight_lines(
             &visible_buffer_lines,
             visible_top,
-            visible_start_offset..visible_end_offset,
+            source_visible_start_offset..source_visible_end_offset,
             cx,
         );
+        let state = self.state.read(cx);
+        let mut highlight_styles: Option<Vec<(Range<usize>, HighlightStyle)>> = highlight_styles
+            .map(|styles| {
+                styles
+                    .into_iter()
+                    .map(|(range, style)| (state.display_range_for_source(&range), style))
+                    .collect()
+            });
+        if !state.presentation.spans().is_empty() {
+            let base = highlight_styles.take().unwrap_or_else(|| {
+                vec![(
+                    visible_start_offset..visible_end_offset,
+                    HighlightStyle::default(),
+                )]
+            });
+            let span_styles = state.presentation.spans().iter().filter_map(|span| {
+                let range = span.display_range.start.max(visible_start_offset)
+                    ..span.display_range.end.min(visible_end_offset);
+                (!range.is_empty()).then_some((
+                    range,
+                    HighlightStyle {
+                        color: Some(cx.theme().primary),
+                        ..Default::default()
+                    },
+                ))
+            });
+            let styled = gpui::combine_highlights(span_styles, base).collect::<Vec<_>>();
+            let editable_styles = state.presentation.spans().iter().filter_map(|span| {
+                let editable = span.editable_display_range.as_ref()?;
+                let range =
+                    editable.start.max(visible_start_offset)..editable.end.min(visible_end_offset);
+                (!range.is_empty()).then_some((
+                    range,
+                    HighlightStyle {
+                        color: Some(cx.theme().foreground),
+                        ..Default::default()
+                    },
+                ))
+            });
+            highlight_styles = Some(gpui::combine_highlights(editable_styles, styled).collect());
+        }
 
         let state = self.state.read(cx);
 
         let visible_line_byte_offsets: Vec<usize> = visible_buffer_lines
             .iter()
-            .map(|&bl| state.text.line_start_offset(bl))
+            .map(|&bl| display_text.line_start_offset(bl))
             .collect();
 
         // For password input (masked: true), convert byte offsets to masked display byte offsets so that
@@ -1636,6 +1850,10 @@ impl Element for TextElement {
             }),
             strikethrough: None,
         };
+        let ime_marked_display_range = state
+            .ime_marked_range
+            .as_ref()
+            .map(|range| state.display_range_for_source(&range.clone().into()));
 
         let runs = if !is_empty {
             if let Some(highlight_styles) = highlight_styles {
@@ -1643,7 +1861,7 @@ impl Element for TextElement {
 
                 runs.extend(highlight_styles.iter().map(|(range, style)| {
                     let mut run = text_style.clone().highlight(*style).to_run(range.len());
-                    if let Some(ime_marked_range) = &state.ime_marked_range {
+                    if let Some(ime_marked_range) = &ime_marked_display_range {
                         if range.start >= ime_marked_range.start
                             && range.end <= ime_marked_range.end
                         {
@@ -1664,7 +1882,7 @@ impl Element for TextElement {
             } else {
                 vec![run]
             }
-        } else if let Some(ime_marked_range) = &state.ime_marked_range {
+        } else if let Some(ime_marked_range) = &ime_marked_display_range {
             // IME marked text
             vec![
                 TextRun {
@@ -1712,7 +1930,8 @@ impl Element for TextElement {
         // 2. Multi-line with soft wrap disabled.
         if state.mode.is_single_line() || !state.soft_wrap {
             let longest_row = state.display_map.longest_row();
-            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
+            let longest_line: SharedString =
+                display_text.slice_line(longest_row).to_string().into();
             longest_line_width = window
                 .text_system()
                 .shape_line(
@@ -1817,7 +2036,10 @@ impl Element for TextElement {
         let document_color_paths =
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
 
+        let span_primary = cx.theme().primary;
         let state = self.state.read(cx);
+        let (span_quads, span_editable_quads, span_icons, span_hitboxes) =
+            Self::layout_spans(state, &last_layout, &bounds, window, span_primary);
         let line_numbers = if state.mode.line_number() {
             let mut line_numbers = Vec::with_capacity(last_layout.visible_buffer_lines.len());
             let other_line_runs = vec![TextRun {
@@ -1901,6 +2123,10 @@ impl Element for TextElement {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+            span_quads,
+            span_editable_quads,
+            span_icons,
+            span_hitboxes,
         }
     }
 
@@ -2003,6 +2229,13 @@ impl Element for TextElement {
         // Paint indent guides
         if let Some(path) = prepaint.indent_guides_path.take() {
             window.paint_path(path, cx.theme().border.opacity(0.85));
+        }
+
+        for span in prepaint.span_quads.drain(..) {
+            window.paint_quad(span);
+        }
+        for editable in prepaint.span_editable_quads.drain(..) {
+            window.paint_quad(editable);
         }
 
         // Paint selections
@@ -2110,6 +2343,25 @@ impl Element for TextElement {
             }
         }
 
+        for (slot, path) in prepaint.span_icons.drain(..) {
+            let icon_size = px(12.).min(slot.size.height - px(2.));
+            let icon_bounds = Bounds::new(
+                point(
+                    slot.center().x - icon_size / 2.,
+                    slot.center().y - icon_size / 2.,
+                ),
+                size(icon_size, icon_size),
+            );
+            let _ = window.paint_svg(
+                icon_bounds,
+                path,
+                None,
+                TransformationMatrix::default(),
+                cx.theme().primary,
+                cx,
+            );
+        }
+
         // Paint blinking cursor
         if focused && show_cursor {
             if let Some(cursor_bounds) = prepaint.cursor_bounds_with_scroll() {
@@ -2196,6 +2448,9 @@ impl Element for TextElement {
 
         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref() {
             window.set_cursor_style(gpui::CursorStyle::PointingHand, &hitbox);
+        }
+        for hitbox in &prepaint.span_hitboxes {
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
         }
 
         // Paint inline completion first line suffix (after cursor on same line)

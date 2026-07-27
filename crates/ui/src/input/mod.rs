@@ -22,6 +22,7 @@ pub(crate) mod popovers;
 mod rope_ext;
 mod search;
 mod selection;
+mod span;
 mod state;
 
 pub(crate) use clear_button::*;
@@ -39,4 +40,5 @@ pub use number_input::{NumberInput, NumberInputEvent, NumberStep, StepAction};
 pub use otp_input::*;
 pub use rope_ext::{InputEdit, Point, RopeExt, RopeLines};
 pub use ropey::Rope;
+pub use span::InputSpan;
 pub use state::*;
