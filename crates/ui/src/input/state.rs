@@ -12,6 +12,7 @@ use gpui::{
     px,
 };
 use gpui::{Half, TextAlign};
+use lsp_types::CompletionItem;
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -122,7 +123,19 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool, shift: bool },
+    /// A completion menu item was accepted and inserted into the input.
+    ///
+    /// Both ranges use UTF-8 byte offsets. `replaced_range` refers to the
+    /// pre-edit text and `inserted_range` refers to the resulting text.
+    CompletionAccepted {
+        item: CompletionItem,
+        replaced_range: Range<usize>,
+        inserted_range: Range<usize>,
+    },
+    PressEnter {
+        secondary: bool,
+        shift: bool,
+    },
     Focus,
     Blur,
 }

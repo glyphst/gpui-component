@@ -15,7 +15,7 @@ const POPOVER_GAP: Pixels = px(4.);
 use crate::{
     ActiveTheme, IndexPath, Selectable, actions, h_flex,
     input::{
-        self, InputState, RopeExt,
+        self, InputEvent, InputState, RopeExt,
         popovers::{editor_popover, render_markdown},
     },
     label::Label,
@@ -262,6 +262,11 @@ impl CompletionMenu {
                     cx,
                 );
                 editor.completion_inserting = false;
+                cx.emit(InputEvent::CompletionAccepted {
+                    item,
+                    replaced_range: range.clone(),
+                    inserted_range: range.start..range.start + new_text.len(),
+                });
                 // FIXME: Input not get the focus
                 editor.focus(window, cx);
             })
