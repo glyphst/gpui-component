@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Entity, IntoElement, SharedString, StyleRefinement, Styled,
-    Subscription, Window, prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StyleRefinement, Styled, Subscription, Window, div,
 };
 
 use crate::{
-    AxisExt, Disableable, Sizable, StyledExt,
+    Disableable, Sizable, StyledExt,
     input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     setting::{
         AnySettingField, RenderOptions,
@@ -154,18 +154,23 @@ impl SettingFieldRender for NumberField {
         });
 
         let state = state_entity.read(cx);
+        let selector = format!(
+            "setting-number-input-{}-{}-{}",
+            options.page_ix, options.group_ix, options.item_ix
+        );
 
-        NumberInput::new(&state.input)
-            .disabled(options.disabled)
-            .with_size(options.size)
-            .map(|this| {
-                if options.layout.is_horizontal() {
-                    this.w_32()
-                } else {
-                    this.w_full()
-                }
-            })
-            .refine_style(style)
+        div()
+            .debug_selector(move || selector.clone())
+            .w_32()
+            .flex_none()
+            .child(
+                NumberInput::new(&state.input)
+                    .disabled(options.disabled)
+                    .with_size(options.size)
+                    .w_full()
+                    .flex_none()
+                    .refine_style(style),
+            )
             .into_any_element()
     }
 }

@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, Axis, Div, InteractiveElement as _, IntoElement, ParentElement, SharedString,
-    Stateful, Styled, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, Axis, Div, InteractiveElement as _, IntoElement, ParentElement, Pixels,
+    SharedString, Stateful, Styled, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use std::{any::TypeId, ops::Deref, rc::Rc};
 
@@ -16,6 +16,9 @@ use crate::{
     text::Text,
     v_flex,
 };
+
+const CONTROL_COLUMN_MAX_WIDTH: Pixels = px(480.);
+const CONTROL_COLUMN_WIDTH_RATIO: f32 = 0.6;
 
 /// Setting item.
 #[derive(Clone)]
@@ -286,7 +289,7 @@ impl SettingItem {
                             if layout.is_horizontal() {
                                 this.h_flex().justify_between().items_start()
                             } else {
-                                this.v_flex()
+                                this.v_flex().items_end()
                             }
                         })
                         .gap_3()
@@ -295,7 +298,7 @@ impl SettingItem {
                                 .debug_selector(move || label_selector.clone())
                                 .map(|this| {
                                     if layout.is_horizontal() {
-                                        this.flex_none().min_w_0().max_w_3_5()
+                                        this.flex_1().min_w_0()
                                     } else {
                                         this.w_full()
                                     }
@@ -318,9 +321,18 @@ impl SettingItem {
                                 .debug_selector(move || field_selector.clone())
                                 .map(|this| {
                                     if layout.is_horizontal() {
-                                        this.h_flex().flex_1().min_w_0().justify_end()
+                                        this.h_flex()
+                                            .w(relative(CONTROL_COLUMN_WIDTH_RATIO))
+                                            .max_w(CONTROL_COLUMN_MAX_WIDTH)
+                                            .flex_none()
+                                            .min_w_0()
+                                            .justify_end()
                                     } else {
-                                        this.w_full()
+                                        this.h_flex()
+                                            .w_full()
+                                            .max_w(CONTROL_COLUMN_MAX_WIDTH)
+                                            .min_w_0()
+                                            .justify_end()
                                     }
                                 })
                                 .child(Self::render_field(
@@ -357,7 +369,7 @@ impl SettingItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting::SettingField;
+    use crate::setting::{NumberFieldOptions, SettingField};
     use gpui::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
     fn render_options(item_ix: usize, layout: Axis) -> RenderOptions {
@@ -379,19 +391,55 @@ mod tests {
         });
     }
 
-    struct HorizontalTextRow;
+    struct HorizontalTextRows;
 
-    impl Render for HorizontalTextRow {
+    impl Render for HorizontalTextRows {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let field = SettingField::<SharedString>::render(|_, _, _| {
+            let api_key_field = SettingField::<SharedString>::render(|_, _, _| {
                 div()
-                    .debug_selector(|| "horizontal-text-control".to_string())
+                    .debug_selector(|| "api-key-control".to_string())
                     .w_full()
                     .h(px(32.0))
             });
-            div().size_full().child(div().w(px(800.0)).child(
-                SettingItem::new("API Key", field).render_item(
-                    &render_options(0, Axis::Horizontal),
+            let region_field = SettingField::<SharedString>::render(|_, _, _| {
+                div()
+                    .debug_selector(|| "azure-region-control".to_string())
+                    .w_full()
+                    .h(px(32.0))
+            });
+            div().size_full().child(
+                v_flex()
+                    .w(px(1000.0))
+                    .gap_4()
+                    .child(
+                        SettingItem::new("API Key", api_key_field)
+                            .description("Stored locally.")
+                            .render_item(&render_options(0, Axis::Horizontal), window, cx),
+                    )
+                    .child(
+                        SettingItem::new("Azure region", region_field)
+                            .description(
+                                "Required by region-scoped Microsoft Translator resources.",
+                            )
+                            .render_item(&render_options(1, Axis::Horizontal), window, cx),
+                    ),
+            )
+        }
+    }
+
+    struct NarrowVerticalTextRow;
+
+    impl Render for NarrowVerticalTextRow {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let field = SettingField::<SharedString>::render(|_, _, _| {
+                div()
+                    .debug_selector(|| "narrow-vertical-text-control".to_string())
+                    .w_full()
+                    .h(px(32.0))
+            });
+            div().size_full().child(div().w(px(320.0)).child(
+                SettingItem::new("API endpoint", field).render_item(
+                    &render_options(0, Axis::Vertical),
                     window,
                     cx,
                 ),
@@ -409,13 +457,49 @@ mod tests {
                     .w_full()
                     .h(px(32.0))
             });
-            div().size_full().child(div().w(px(320.0)).child(
+            div().size_full().child(div().w(px(800.0)).child(
                 SettingItem::new("API endpoint", field).render_item(
                     &render_options(0, Axis::Vertical),
                     window,
                     cx,
                 ),
             ))
+        }
+    }
+
+    struct NumberRows;
+
+    impl Render for NumberRows {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let number_field = || {
+                SettingField::number_input(
+                    NumberFieldOptions {
+                        min: 0.,
+                        max: 1000.,
+                        step: 1.,
+                    },
+                    |_| 320.,
+                    |_, _| {},
+                )
+            };
+
+            v_flex()
+                .w(px(800.0))
+                .gap_4()
+                .child(
+                    SettingItem::new("Horizontal number", number_field()).render_item(
+                        &render_options(0, Axis::Horizontal),
+                        window,
+                        cx,
+                    ),
+                )
+                .child(
+                    SettingItem::new("Vertical number", number_field()).render_item(
+                        &render_options(1, Axis::Vertical),
+                        window,
+                        cx,
+                    ),
+                )
         }
     }
 
@@ -454,29 +538,39 @@ mod tests {
     }
 
     #[gpui::test]
-    fn horizontal_field_fills_the_space_after_its_label(cx: &mut TestAppContext) {
+    fn horizontal_text_fields_share_a_bounded_control_column(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let (_, cx) = cx.add_window_view(|_, _| HorizontalTextRow);
+        let (_, cx) = cx.add_window_view(|_, _| HorizontalTextRows);
         cx.simulate_resize(size(px(1000.0), px(600.0)));
         let cx: &mut VisualTestContext = cx;
         draw(cx);
 
-        let row = cx.debug_bounds("setting-item-0-0-0").unwrap();
-        let label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
-        let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
-        let control = cx.debug_bounds("horizontal-text-control").unwrap();
+        let api_key_row = cx.debug_bounds("setting-item-0-0-0").unwrap();
+        let api_key_label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
+        let api_key_field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let api_key_control = cx.debug_bounds("api-key-control").unwrap();
+        let region_row = cx.debug_bounds("setting-item-0-0-1").unwrap();
+        let region_label = cx.debug_bounds("setting-item-label-0-0-1").unwrap();
+        let region_field = cx.debug_bounds("setting-item-field-0-0-1").unwrap();
+        let region_control = cx.debug_bounds("azure-region-control").unwrap();
 
-        assert_eq!(field.right(), row.right());
-        assert_eq!(control, field);
-        assert!(field.left() > label.right());
-        assert!(field.size.width > row.size.width - px(160.0));
+        assert_eq!(api_key_field.right(), api_key_row.right());
+        assert_eq!(region_field.right(), region_row.right());
+        assert_eq!(api_key_field.size.width, CONTROL_COLUMN_MAX_WIDTH);
+        assert_eq!(region_field.size.width, CONTROL_COLUMN_MAX_WIDTH);
+        assert_eq!(api_key_field.left(), region_field.left());
+        assert_eq!(api_key_field.right(), region_field.right());
+        assert_eq!(api_key_control, api_key_field);
+        assert_eq!(region_control, region_field);
+        assert!(api_key_field.left() > api_key_label.right());
+        assert!(region_field.left() > region_label.right());
     }
 
     #[gpui::test]
-    fn vertical_field_remains_full_width_below_its_label(cx: &mut TestAppContext) {
+    fn vertical_field_uses_the_same_bounded_control_width_below_its_label(cx: &mut TestAppContext) {
         cx.update(crate::init);
         let (_, cx) = cx.add_window_view(|_, _| VerticalTextRow);
-        cx.simulate_resize(size(px(600.0), px(600.0)));
+        cx.simulate_resize(size(px(1000.0), px(600.0)));
         let cx: &mut VisualTestContext = cx;
         draw(cx);
 
@@ -485,10 +579,47 @@ mod tests {
         let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
         let control = cx.debug_bounds("vertical-text-control").unwrap();
 
+        assert_eq!(field.right(), row.right());
+        assert_eq!(field.size.width, CONTROL_COLUMN_MAX_WIDTH);
+        assert_eq!(control, field);
+        assert!(field.top() > label.bottom());
+    }
+
+    #[gpui::test]
+    fn narrow_vertical_text_field_fills_the_available_row_width(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| NarrowVerticalTextRow);
+        cx.simulate_resize(size(px(600.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let row = cx.debug_bounds("setting-item-0-0-0").unwrap();
+        let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let control = cx.debug_bounds("narrow-vertical-text-control").unwrap();
+
         assert_eq!(field.left(), row.left());
         assert_eq!(field.right(), row.right());
         assert_eq!(control, field);
-        assert!(field.top() > label.bottom());
+    }
+
+    #[gpui::test]
+    fn number_inputs_remain_compact_in_horizontal_and_vertical_layouts(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| NumberRows);
+        cx.simulate_resize(size(px(1000.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        for (field_selector, number_selector) in [
+            ("setting-item-field-0-0-0", "setting-number-input-0-0-0"),
+            ("setting-item-field-0-0-1", "setting-number-input-0-0-1"),
+        ] {
+            let field = cx.debug_bounds(field_selector).unwrap();
+            let number = cx.debug_bounds(number_selector).unwrap();
+            assert_eq!(field.size.width, CONTROL_COLUMN_MAX_WIDTH);
+            assert_eq!(number.size.width, px(128.0));
+            assert_eq!(number.right(), field.right());
+        }
     }
 
     #[gpui::test]
