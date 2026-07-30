@@ -262,6 +262,7 @@ impl SettingItem {
         let item_selector = format!("setting-item-{selector_suffix}");
         let label_selector = format!("setting-item-label-{selector_suffix}");
         let field_selector = format!("setting-item-field-{selector_suffix}");
+        let description_selector = format!("setting-item-description-{selector_suffix}");
         div()
             .id(SharedString::from(format!("item-{}", options.item_ix)))
             .debug_selector(move || item_selector.clone())
@@ -281,71 +282,76 @@ impl SettingItem {
                         layout
                     };
 
-                    div()
+                    v_flex()
                         .w_full()
                         .overflow_hidden()
                         .when(disabled, |this| this.opacity(0.5))
-                        .map(|this| {
-                            if layout.is_horizontal() {
-                                this.h_flex().justify_between().items_start()
-                            } else {
-                                this.v_flex().items_end()
-                            }
-                        })
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .debug_selector(move || label_selector.clone())
-                                .map(|this| {
-                                    if layout.is_horizontal() {
-                                        this.flex_1().min_w_0()
-                                    } else {
-                                        this.w_full()
-                                    }
-                                })
-                                .gap_1()
-                                .child(Label::new(title).text_sm())
-                                .when_some(description, |this, description| {
-                                    this.child(
-                                        div()
-                                            .size_full()
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(description),
-                                    )
-                                }),
-                        )
+                        .gap_1()
                         .child(
                             div()
-                                .id("field")
-                                .debug_selector(move || field_selector.clone())
+                                .w_full()
                                 .map(|this| {
                                     if layout.is_horizontal() {
-                                        this.h_flex()
-                                            .w(relative(CONTROL_COLUMN_WIDTH_RATIO))
-                                            .max_w(CONTROL_COLUMN_MAX_WIDTH)
-                                            .flex_none()
-                                            .min_w_0()
-                                            .justify_end()
+                                        this.h_flex().justify_between().items_start()
                                     } else {
-                                        this.h_flex()
-                                            .w_full()
-                                            .max_w(CONTROL_COLUMN_MAX_WIDTH)
-                                            .min_w_0()
-                                            .justify_end()
+                                        this.v_flex().items_end()
                                     }
                                 })
-                                .child(Self::render_field(
-                                    field,
-                                    RenderOptions {
-                                        layout,
-                                        disabled,
-                                        ..*options
-                                    },
-                                    window,
-                                    cx,
-                                )),
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .debug_selector(move || label_selector.clone())
+                                        .map(|this| {
+                                            if layout.is_horizontal() {
+                                                this.flex_1().min_w_0()
+                                            } else {
+                                                this.w_full()
+                                            }
+                                        })
+                                        .child(Label::new(title).text_sm()),
+                                )
+                                .child(
+                                    div()
+                                        .id("field")
+                                        .debug_selector(move || field_selector.clone())
+                                        .map(|this| {
+                                            if layout.is_horizontal() {
+                                                this.h_flex()
+                                                    .w(relative(CONTROL_COLUMN_WIDTH_RATIO))
+                                                    .max_w(CONTROL_COLUMN_MAX_WIDTH)
+                                                    .flex_none()
+                                                    .min_w_0()
+                                                    .justify_end()
+                                            } else {
+                                                this.h_flex()
+                                                    .w_full()
+                                                    .max_w(CONTROL_COLUMN_MAX_WIDTH)
+                                                    .min_w_0()
+                                                    .justify_end()
+                                            }
+                                        })
+                                        .child(Self::render_field(
+                                            field,
+                                            RenderOptions {
+                                                layout,
+                                                disabled,
+                                                ..*options
+                                            },
+                                            window,
+                                            cx,
+                                        )),
+                                ),
                         )
+                        .when_some(description, |this, description| {
+                            this.child(
+                                div()
+                                    .debug_selector(move || description_selector.clone())
+                                    .w_full()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(description),
+                            )
+                        })
                         .into_any_element()
                 }
                 SettingItem::Element {
@@ -457,13 +463,13 @@ mod tests {
                     .w_full()
                     .h(px(32.0))
             });
-            div().size_full().child(div().w(px(800.0)).child(
-                SettingItem::new("API endpoint", field).render_item(
-                    &render_options(0, Axis::Vertical),
-                    window,
-                    cx,
+            div().size_full().child(
+                div().w(px(800.0)).child(
+                    SettingItem::new("API endpoint", field)
+                        .description("Default endpoint")
+                        .render_item(&render_options(0, Axis::Vertical), window, cx),
                 ),
-            ))
+            )
         }
     }
 
@@ -548,10 +554,12 @@ mod tests {
         let api_key_row = cx.debug_bounds("setting-item-0-0-0").unwrap();
         let api_key_label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
         let api_key_field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let api_key_description = cx.debug_bounds("setting-item-description-0-0-0").unwrap();
         let api_key_control = cx.debug_bounds("api-key-control").unwrap();
         let region_row = cx.debug_bounds("setting-item-0-0-1").unwrap();
         let region_label = cx.debug_bounds("setting-item-label-0-0-1").unwrap();
         let region_field = cx.debug_bounds("setting-item-field-0-0-1").unwrap();
+        let region_description = cx.debug_bounds("setting-item-description-0-0-1").unwrap();
         let region_control = cx.debug_bounds("azure-region-control").unwrap();
 
         assert_eq!(api_key_field.right(), api_key_row.right());
@@ -564,6 +572,20 @@ mod tests {
         assert_eq!(region_control, region_field);
         assert!(api_key_field.left() > api_key_label.right());
         assert!(region_field.left() > region_label.right());
+        for (row, label, field, description) in [
+            (
+                api_key_row,
+                api_key_label,
+                api_key_field,
+                api_key_description,
+            ),
+            (region_row, region_label, region_field, region_description),
+        ] {
+            assert_eq!(description.left(), row.left());
+            assert_eq!(description.right(), row.right());
+            assert!(description.top() > label.bottom());
+            assert!(description.top() > field.bottom());
+        }
     }
 
     #[gpui::test]
@@ -577,12 +599,16 @@ mod tests {
         let row = cx.debug_bounds("setting-item-0-0-0").unwrap();
         let label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
         let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let description = cx.debug_bounds("setting-item-description-0-0-0").unwrap();
         let control = cx.debug_bounds("vertical-text-control").unwrap();
 
         assert_eq!(field.right(), row.right());
         assert_eq!(field.size.width, CONTROL_COLUMN_MAX_WIDTH);
         assert_eq!(control, field);
         assert!(field.top() > label.bottom());
+        assert_eq!(description.left(), row.left());
+        assert_eq!(description.right(), row.right());
+        assert!(description.top() > field.bottom());
     }
 
     #[gpui::test]
