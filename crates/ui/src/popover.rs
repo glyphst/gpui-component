@@ -1,8 +1,8 @@
 use gpui::{
-    Anchor, AnyElement, App, Bounds, Context, Deferred, DismissEvent, Div, ElementId,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement, Pixels, Point, Render, RenderOnce, Stateful, StyleRefinement,
-    Styled, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, App, Bounds, Context, Deferred, DismissEvent, Div, ElementId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    ParentElement, Pixels, Point, Render, RenderOnce, Stateful, StyleRefinement, Styled,
+    Subscription, Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
 };
 use std::{cell::Cell, rc::Rc};
 
@@ -400,6 +400,17 @@ impl RenderOnce for Popover {
 
         let el = div()
             .id(self.id)
+            .when_some(self.trigger_style.clone(), |mut this, trigger_style| {
+                let style = this.style();
+                style.display = trigger_style.display;
+                style.size.width = trigger_style.size.width;
+                style.min_size.width = trigger_style.min_size.width;
+                style.max_size.width = trigger_style.max_size.width;
+                style.flex_basis = trigger_style.flex_basis;
+                style.flex_grow = trigger_style.flex_grow;
+                style.flex_shrink = trigger_style.flex_shrink;
+                this
+            })
             .child((trigger)(open, window, cx))
             .on_mouse_down(self.mouse_button, {
                 let state = state.clone();

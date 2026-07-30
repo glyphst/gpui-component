@@ -252,8 +252,16 @@ impl SettingItem {
         window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
+        let selector_suffix = format!(
+            "{}-{}-{}",
+            options.page_ix, options.group_ix, options.item_ix
+        );
+        let item_selector = format!("setting-item-{selector_suffix}");
+        let label_selector = format!("setting-item-label-{selector_suffix}");
+        let field_selector = format!("setting-item-field-{selector_suffix}");
         div()
             .id(SharedString::from(format!("item-{}", options.item_ix)))
+            .debug_selector(move || item_selector.clone())
             .w_full()
             .child(match self {
                 SettingItem::Item {
@@ -284,9 +292,10 @@ impl SettingItem {
                         .gap_3()
                         .child(
                             v_flex()
+                                .debug_selector(move || label_selector.clone())
                                 .map(|this| {
                                     if layout.is_horizontal() {
-                                        this.flex_1().max_w_3_5()
+                                        this.flex_none().min_w_0().max_w_3_5()
                                     } else {
                                         this.w_full()
                                     }
@@ -303,16 +312,28 @@ impl SettingItem {
                                     )
                                 }),
                         )
-                        .child(div().id("field").child(Self::render_field(
-                            field,
-                            RenderOptions {
-                                layout,
-                                disabled,
-                                ..*options
-                            },
-                            window,
-                            cx,
-                        )))
+                        .child(
+                            div()
+                                .id("field")
+                                .debug_selector(move || field_selector.clone())
+                                .map(|this| {
+                                    if layout.is_horizontal() {
+                                        this.h_flex().flex_1().min_w_0().justify_end()
+                                    } else {
+                                        this.w_full()
+                                    }
+                                })
+                                .child(Self::render_field(
+                                    field,
+                                    RenderOptions {
+                                        layout,
+                                        disabled,
+                                        ..*options
+                                    },
+                                    window,
+                                    cx,
+                                )),
+                        )
                         .into_any_element()
                 }
                 SettingItem::Element {
@@ -330,5 +351,163 @@ impl SettingItem {
                     ))
                     .into_any_element(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::setting::SettingField;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext, px, size};
+
+    fn render_options(item_ix: usize, layout: Axis) -> RenderOptions {
+        RenderOptions {
+            page_ix: 0,
+            group_ix: 0,
+            item_ix,
+            size: crate::Size::default(),
+            group_variant: Default::default(),
+            layout,
+            disabled: false,
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+    }
+
+    struct HorizontalTextRow;
+
+    impl Render for HorizontalTextRow {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let field = SettingField::<SharedString>::render(|_, _, _| {
+                div()
+                    .debug_selector(|| "horizontal-text-control".to_string())
+                    .w_full()
+                    .h(px(32.0))
+            });
+            div().size_full().child(div().w(px(800.0)).child(
+                SettingItem::new("API Key", field).render_item(
+                    &render_options(0, Axis::Horizontal),
+                    window,
+                    cx,
+                ),
+            ))
+        }
+    }
+
+    struct VerticalTextRow;
+
+    impl Render for VerticalTextRow {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let field = SettingField::<SharedString>::render(|_, _, _| {
+                div()
+                    .debug_selector(|| "vertical-text-control".to_string())
+                    .w_full()
+                    .h(px(32.0))
+            });
+            div().size_full().child(div().w(px(320.0)).child(
+                SettingItem::new("API endpoint", field).render_item(
+                    &render_options(0, Axis::Vertical),
+                    window,
+                    cx,
+                ),
+            ))
+        }
+    }
+
+    struct DropdownRows;
+
+    impl Render for DropdownRows {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let long_label = "Long translation model ".repeat(80);
+            let long_field = SettingField::<SharedString>::dropdown(
+                vec![("long".into(), long_label.into())],
+                |_| "long".into(),
+                |_, _| {},
+            );
+            let short_field = SettingField::<SharedString>::dropdown(
+                vec![("short".into(), "Short".into())],
+                |_| "short".into(),
+                |_, _| {},
+            );
+
+            crate::v_flex()
+                .w(px(620.0))
+                .gap_4()
+                .child(
+                    SettingItem::new("Translation model", long_field).render_item(
+                        &render_options(0, Axis::Horizontal),
+                        window,
+                        cx,
+                    ),
+                )
+                .child(SettingItem::new("Thinking level", short_field).render_item(
+                    &render_options(1, Axis::Horizontal),
+                    window,
+                    cx,
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn horizontal_field_fills_the_space_after_its_label(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| HorizontalTextRow);
+        cx.simulate_resize(size(px(1000.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let row = cx.debug_bounds("setting-item-0-0-0").unwrap();
+        let label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
+        let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let control = cx.debug_bounds("horizontal-text-control").unwrap();
+
+        assert_eq!(field.right(), row.right());
+        assert_eq!(control, field);
+        assert!(field.left() > label.right());
+        assert!(field.size.width > row.size.width - px(160.0));
+    }
+
+    #[gpui::test]
+    fn vertical_field_remains_full_width_below_its_label(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| VerticalTextRow);
+        cx.simulate_resize(size(px(600.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let row = cx.debug_bounds("setting-item-0-0-0").unwrap();
+        let label = cx.debug_bounds("setting-item-label-0-0-0").unwrap();
+        let field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let control = cx.debug_bounds("vertical-text-control").unwrap();
+
+        assert_eq!(field.left(), row.left());
+        assert_eq!(field.right(), row.right());
+        assert_eq!(control, field);
+        assert!(field.top() > label.bottom());
+    }
+
+    #[gpui::test]
+    fn dropdown_uses_available_width_only_when_its_label_needs_it(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| DropdownRows);
+        cx.simulate_resize(size(px(800.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let long_field = cx.debug_bounds("setting-item-field-0-0-0").unwrap();
+        let long_dropdown = cx.debug_bounds("setting-dropdown-0-0-0").unwrap();
+        assert_eq!(long_dropdown.right(), long_field.right());
+        assert_eq!(long_dropdown.size.width, long_field.size.width);
+        assert!(long_dropdown.left() >= long_field.left());
+
+        let short_field = cx.debug_bounds("setting-item-field-0-0-1").unwrap();
+        let short_dropdown = cx.debug_bounds("setting-dropdown-0-0-1").unwrap();
+        assert_eq!(short_dropdown.right(), short_field.right());
+        assert!(short_dropdown.size.width < short_field.size.width);
     }
 }

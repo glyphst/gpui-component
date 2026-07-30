@@ -187,6 +187,7 @@ pub struct Button {
     style: StyleRefinement,
     icon: Option<ButtonIcon>,
     label: Option<SharedString>,
+    truncate_label: bool,
     children: Vec<AnyElement>,
     disabled: bool,
     pub(crate) selected: bool,
@@ -230,6 +231,7 @@ impl Button {
             style: StyleRefinement::default(),
             icon: None,
             label: None,
+            truncate_label: false,
             disabled: false,
             selected: false,
             variant: ButtonVariant::default(),
@@ -284,6 +286,11 @@ impl Button {
     /// Set label to the Button, if no label is set, the button will be in Icon Button mode.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    pub(crate) fn truncate_label(mut self) -> Self {
+        self.truncate_label = true;
         self
     }
 
@@ -440,6 +447,7 @@ impl RenderOnce for Button {
         let clickable = self.clickable();
         let is_disabled = self.disabled;
         let hoverable = self.hoverable();
+        let truncate_label = self.truncate_label;
         let normal_style = style.normal(self.outline, cx);
         let icon_size = match self.size {
             Size::Size(v) => Size::Size(v * 0.75),
@@ -613,7 +621,18 @@ impl RenderOnce for Button {
                         )
                     })
                     .when_some(self.label, |this, label| {
-                        this.child(div().flex_none().line_height(relative(1.)).child(label))
+                        this.child(
+                            div()
+                                .map(|this| {
+                                    if truncate_label {
+                                        this.flex_1().min_w_0().truncate()
+                                    } else {
+                                        this.flex_none()
+                                    }
+                                })
+                                .line_height(relative(1.))
+                                .child(label),
+                        )
                     })
                     .children(self.children)
                     .when(self.dropdown_caret, |this| {

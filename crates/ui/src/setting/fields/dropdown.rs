@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, AnyElement, App, IntoElement, SharedString, StyleRefinement, Styled, Window,
-    prelude::FluentBuilder as _,
+    Anchor, AnyElement, App, InteractiveElement as _, IntoElement, SharedString, StyleRefinement,
+    Styled, Window, prelude::FluentBuilder as _,
 };
 
 use crate::{
@@ -56,10 +56,19 @@ where
             .find(|(value, _)| *value == old_value.clone().into())
             .map(|(_, label)| label.clone())
             .unwrap_or_else(|| old_value.clone().into());
+        let selector = format!(
+            "setting-dropdown-{}-{}-{}",
+            options.page_ix, options.group_ix, options.item_ix
+        );
 
         Button::new("btn")
+            .debug_selector(move || selector.clone())
             .when(options.layout.is_vertical(), |this| this.w_full())
+            .flex_initial()
+            .min_w_0()
+            .max_w_full()
             .label(old_label)
+            .truncate_label()
             .dropdown_caret(true)
             .outline()
             .disabled(options.disabled)

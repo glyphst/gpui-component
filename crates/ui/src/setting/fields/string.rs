@@ -2,11 +2,11 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext as _, Entity, IntoElement, SharedString, StyleRefinement, Styled,
-    Window, prelude::FluentBuilder as _,
+    Window,
 };
 
 use crate::{
-    AxisExt as _, Sizable, StyledExt,
+    Sizable, StyledExt,
     input::{Input, InputEvent, InputState},
     setting::{
         AnySettingField, RenderOptions,
@@ -89,13 +89,8 @@ where
         Input::new(&state.input)
             .disabled(options.disabled)
             .with_size(options.size)
-            .map(|this| {
-                if options.layout.is_horizontal() {
-                    this.w_64()
-                } else {
-                    this.w_full()
-                }
-            })
+            .w_full()
+            .min_w_0()
             .refine_style(style)
             .into_any_element()
     }
