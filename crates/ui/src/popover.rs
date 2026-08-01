@@ -4,10 +4,14 @@ use gpui::{
     ParentElement, Pixels, Point, Render, RenderOnce, Stateful, StyleRefinement, Styled,
     Subscription, Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
 };
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
-    ElementExt, Selectable, StyledExt as _, actions::Cancel, global_state::GlobalState, v_flex,
+    ElementExt, Selectable, StyledExt as _,
+    actions::Cancel,
+    animation::{Transition, cubic_bezier},
+    global_state::GlobalState,
+    v_flex,
 };
 
 const CONTEXT: &str = "Popover";
@@ -37,6 +41,7 @@ pub struct Popover {
     trigger_style: Option<StyleRefinement>,
     mouse_button: MouseButton,
     appearance: bool,
+    animated: bool,
     overlay_closable: bool,
     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
 }
@@ -55,6 +60,7 @@ impl Popover {
             children: vec![],
             mouse_button: MouseButton::Left,
             appearance: true,
+            animated: true,
             overlay_closable: true,
             default_open: false,
             open: None,
@@ -159,6 +165,12 @@ impl Popover {
     /// - The click out of the popover will not dismiss it.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// Set whether the popover content animates when it opens. Defaults to `true`.
+    pub fn animated(mut self, animated: bool) -> Self {
+        self.animated = animated;
         self
     }
 
@@ -471,6 +483,17 @@ impl RenderOnce for Popover {
                 })
                 .refine_style(&self.style);
 
+        let popover_content = if self.animated {
+            Transition::new(Duration::from_millis(140))
+                .ease(cubic_bezier(0.25, 0.1, 0.25, 1.0))
+                .slide_y(px(-2.0), px(0.0))
+                .fade(0.0, 1.0)
+                .apply(popover_content, "popover-enter")
+                .into_any_element()
+        } else {
+            popover_content.into_any_element()
+        };
+
         el.child(Self::render_popover(
             self.anchor,
             position,
@@ -493,12 +516,14 @@ mod tests {
             .mouse_button(MouseButton::Right)
             .default_open(true)
             .appearance(false)
+            .animated(false)
             .overlay_closable(false);
 
         assert_eq!(popover.anchor, Anchor::BottomCenter);
         assert_eq!(popover.mouse_button, MouseButton::Right);
         assert!(popover.default_open);
         assert!(!popover.appearance);
+        assert!(!popover.animated);
         assert!(!popover.overlay_closable);
     }
 

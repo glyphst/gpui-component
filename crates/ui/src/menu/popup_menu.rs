@@ -2,7 +2,11 @@ use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
 use crate::menu::menu_item::MenuItemElement;
 use crate::scroll::ScrollableElement;
-use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
+use crate::{
+    ActiveTheme, ElementExt, Icon, IconName, Sizable as _,
+    animation::{Transition, cubic_bezier},
+    h_flex, v_flex,
+};
 use crate::{Side, Size, StyledExt, kbd::Kbd};
 use gpui::{
     Action, Anchor, AnyElement, App, AppContext, Bounds, Context, DismissEvent, Edges, Entity,
@@ -12,7 +16,7 @@ use gpui::{
 };
 use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
 
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
 const CONTEXT: &str = "PopupMenu";
 
@@ -296,6 +300,7 @@ pub struct PopupMenu {
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
     external_link_icon: bool,
+    animated: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
     submenu_anchor: (Anchor, Pixels),
@@ -332,6 +337,7 @@ impl PopupMenu {
             scrollable: false,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
+            animated: true,
             size: Size::default(),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: 1,
@@ -408,6 +414,12 @@ impl PopupMenu {
     /// Set the menu to show external link icon, default is true.
     pub fn external_link_icon(mut self, visible: bool) -> Self {
         self.external_link_icon = visible;
+        self
+    }
+
+    /// Set whether this menu animates when mounted. Defaults to `true`.
+    pub fn animated(mut self, animated: bool) -> Self {
+        self.animated = animated;
         self
     }
 
@@ -1333,7 +1345,7 @@ impl Render for PopupMenu {
             radius: cx.theme().radius.min(px(8.)),
         };
 
-        v_flex()
+        let menu = v_flex()
             .id("popup-menu")
             .role(Role::Menu)
             .key_context(CONTEXT)
@@ -1375,7 +1387,18 @@ impl Render for PopupMenu {
             .when(self.scrollable, |this| {
                 // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
                 this.vertical_scrollbar(&self.scroll_handle)
-            })
+            });
+
+        if self.animated {
+            Transition::new(Duration::from_millis(140))
+                .ease(cubic_bezier(0.25, 0.1, 0.25, 1.0))
+                .slide_y(px(-2.0), px(0.0))
+                .fade(0.0, 1.0)
+                .apply(menu, "popup-menu-enter")
+                .into_any_element()
+        } else {
+            menu.into_any_element()
+        }
     }
 }
 
