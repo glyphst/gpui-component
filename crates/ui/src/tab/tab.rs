@@ -129,13 +129,12 @@ impl TabVariant {
         match self {
             TabVariant::Tab => TabStyle {
                 fg: cx.theme().tab_foreground,
-                bg: cx.theme().transparent.into(),
+                bg: cx.theme().tokens.tab.into(),
                 borders: Edges {
-                    left: px(1.),
                     right: px(1.),
                     ..Default::default()
                 },
-                border_color: cx.theme().transparent,
+                border_color: cx.theme().border,
                 ..Default::default()
             },
             TabVariant::Outline => TabStyle {
@@ -173,13 +172,12 @@ impl TabVariant {
         match self {
             TabVariant::Tab => TabStyle {
                 fg: cx.theme().tab_active_foreground,
-                bg: cx.theme().transparent.into(),
+                bg: cx.theme().tokens.secondary_hover.into(),
                 borders: Edges {
-                    left: px(1.),
                     right: px(1.),
                     ..Default::default()
                 },
-                border_color: cx.theme().transparent,
+                border_color: cx.theme().border,
                 ..Default::default()
             },
             TabVariant::Outline => TabStyle {
@@ -224,7 +222,6 @@ impl TabVariant {
                 fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().tokens.tab_active.into(),
                 borders: Edges {
-                    left: px(1.),
                     right: px(1.),
                     ..Default::default()
                 },
@@ -267,14 +264,9 @@ impl TabVariant {
         match self {
             TabVariant::Tab => TabStyle {
                 fg: cx.theme().muted_foreground,
-                bg: cx.theme().transparent.into(),
-                border_color: if selected {
-                    cx.theme().border
-                } else {
-                    cx.theme().transparent
-                },
+                bg: cx.theme().tokens.tab.into(),
+                border_color: cx.theme().border,
                 borders: Edges {
-                    left: px(1.),
                     right: px(1.),
                     ..Default::default()
                 },
@@ -630,6 +622,7 @@ impl RenderOnce for Tab {
         let inner_height = self.variant.inner_height(self.size);
         let height = self.variant.height(self.size);
         let aria_label = self.a11y_label();
+        let tab_ix = self.ix;
 
         let segmented_indicator_active =
             self.variant == TabVariant::Segmented && self.indicator_active;
@@ -683,27 +676,36 @@ impl RenderOnce for Tab {
 
         let inner_content = h_flex()
             .flex_1()
+            .min_w_0()
             .h(inner_height)
             .line_height(relative(1.))
             .whitespace_nowrap()
             .items_center()
-            .justify_center()
             .overflow_hidden()
             .margins(inner_margins)
-            .flex_shrink_0()
             .map(|this| match self.icon {
-                Some(icon) => this
-                    .w(inner_height * 1.25)
-                    .child(icon.map(|this| match self.size {
-                        Size::XSmall => this.size_2p5(),
-                        Size::Small => this.size_3p5(),
-                        Size::Large => this.size_4(),
-                        _ => this.size_4(),
-                    })),
+                Some(icon) => {
+                    this.w(inner_height * 1.25)
+                        .justify_center()
+                        .child(icon.map(|this| match self.size {
+                            Size::XSmall => this.size_2p5(),
+                            Size::Small => this.size_3p5(),
+                            Size::Large => this.size_4(),
+                            _ => this.size_4(),
+                        }))
+                }
                 None => this
                     .paddings(inner_paddings)
+                    .justify_start()
                     .map(|this| match self.label {
-                        Some(label) => this.child(label),
+                        Some(label) => this.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .debug_selector(move || format!("tab-label-{tab_ix}"))
+                                .child(label),
+                        ),
                         None => this,
                     })
                     .children(self.children),
@@ -732,7 +734,7 @@ impl RenderOnce for Tab {
             .aria_selected(self.selected)
             .relative()
             .flex()
-            .flex_wrap()
+            .flex_nowrap()
             .gap_1()
             .items_center()
             .flex_shrink_0()
@@ -806,6 +808,40 @@ impl RenderOnce for Tab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tab::TabBar;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext, size};
+
+    struct ConstrainedTabHost;
+
+    impl Render for ConstrainedTabHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(160.)).child(
+                TabBar::new("constrained-tabs")
+                    .w_full()
+                    .selected_index(0)
+                    .child(
+                        Tab::new()
+                            .min_w(px(160.))
+                            .max_w(px(160.))
+                            .label("A very long document title that must truncate from the right")
+                            .suffix(
+                                div()
+                                    .size(px(24.))
+                                    .flex_none()
+                                    .debug_selector(|| "tab-test-suffix".to_string()),
+                            )
+                            .debug_selector(|| "tab-test-body".to_string()),
+                    ),
+            )
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+    }
 
     #[gpui::test]
     fn a11y_label_defaults_to_visible_label(_cx: &mut gpui::TestAppContext) {
@@ -819,5 +855,24 @@ mod tests {
         let tab = Tab::new().label("Acct").aria_label("Account settings");
 
         assert_eq!(tab.a11y_label(), Some("Account settings".into()));
+    }
+
+    #[gpui::test]
+    fn constrained_label_stays_inside_the_tab_before_the_suffix(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| ConstrainedTabHost);
+        cx.simulate_resize(size(px(400.), px(200.)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let tab = cx.debug_bounds("tab-test-body").unwrap();
+        let label = cx.debug_bounds("tab-label-0").unwrap();
+        let suffix = cx.debug_bounds("tab-test-suffix").unwrap();
+
+        assert_eq!(tab.size.width, px(160.));
+        assert!(label.left() >= tab.left());
+        assert!(label.right() <= suffix.left());
+        assert!(suffix.right() <= tab.right());
+        assert!(label.size.width > px(0.));
     }
 }
