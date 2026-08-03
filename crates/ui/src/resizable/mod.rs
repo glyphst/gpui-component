@@ -31,6 +31,7 @@ pub fn resizable_panel() -> ResizablePanel {
 pub struct ResizableState {
     /// The `axis` will sync to actual axis of the ResizablePanelGroup in use.
     axis: Axis,
+    gap: Pixels,
     panels: Vec<ResizablePanelState>,
     sizes: Vec<Pixels>,
     pub(crate) resizing_panel_ix: Option<usize>,
@@ -41,6 +42,7 @@ impl Default for ResizableState {
     fn default() -> Self {
         Self {
             axis: Axis::Horizontal,
+            gap: px(0.),
             panels: vec![],
             sizes: vec![],
             resizing_panel_ix: None,
@@ -107,11 +109,19 @@ impl ResizableState {
 
         // We make sure that the size always sums up to the container size
         // by reducing the size of all other panels first.
-        let container_size = self.container_size().max(px(1.));
+        let container_size = self
+            .container_size_for_panel_count(self.panels.len() + 1)
+            .max(px(1.));
         let total_leftover_size = (container_size - size).max(px(1.));
+        let current_total = self
+            .sizes
+            .iter()
+            .map(|size| size.as_f32())
+            .sum::<f32>()
+            .max(1.0);
 
         for (i, panel) in self.panels.iter_mut().enumerate() {
-            let ratio = self.sizes[i] / container_size;
+            let ratio = self.sizes[i].as_f32() / current_total;
             self.sizes[i] = total_leftover_size * ratio;
             panel.size = Some(self.sizes[i]);
         }
@@ -131,10 +141,12 @@ impl ResizableState {
         &mut self,
         axis: Axis,
         panels_count: usize,
+        gap: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let mut changed = self.axis != axis;
+        let mut changed = self.axis != axis || self.gap != gap;
         self.axis = axis;
+        self.gap = gap;
 
         if panels_count > self.panels.len() {
             let diff = panels_count - self.panels.len();
@@ -242,7 +254,12 @@ impl ResizableState {
 
     #[inline]
     pub(crate) fn container_size(&self) -> Pixels {
-        self.bounds.size.along(self.axis)
+        self.container_size_for_panel_count(self.panels.len())
+    }
+
+    fn container_size_for_panel_count(&self, panel_count: usize) -> Pixels {
+        let gaps = self.gap * panel_count.saturating_sub(1) as f32;
+        (self.bounds.size.along(self.axis) - gaps).max(px(0.))
     }
 
     pub(crate) fn done_resizing(&mut self, cx: &mut Context<Self>) {
@@ -381,12 +398,41 @@ pub(crate) struct ResizablePanelState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, TestAppContext, size};
+    use gpui::{
+        AppContext as _, Context, InteractiveElement as _, ParentElement as _, Render, Styled as _,
+        TestAppContext, VisualTestContext, Window, div, size,
+    };
+
+    struct GappedPanelHost;
+
+    impl Render for GappedPanelHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            div().w(px(308.)).h(px(100.)).child(
+                ResizablePanelGroup::new("gapped-panels")
+                    .gap(px(4.))
+                    .children((0..3).map(|ix| {
+                        resizable_panel().child(
+                            div()
+                                .size_full()
+                                .debug_selector(move || format!("gapped-panel-{ix}")),
+                        )
+                    })),
+            )
+        }
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+    }
 
     #[gpui::test]
     fn reset_panel_sizes_distributes_the_container_equally(cx: &mut TestAppContext) {
         let state = cx.new(|_| ResizableState {
             axis: Axis::Horizontal,
+            gap: px(0.),
             panels: vec![ResizablePanelState::default(); 3],
             sizes: vec![px(100.), px(200.), px(300.)],
             resizing_panel_ix: Some(1),
@@ -408,6 +454,66 @@ mod tests {
                     .all(|panel| panel.size == Some(px(200.)))
             );
         });
+    }
+
+    #[gpui::test]
+    fn reset_panel_sizes_reserves_the_configured_gaps(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ResizableState {
+            axis: Axis::Horizontal,
+            gap: px(4.),
+            panels: vec![ResizablePanelState::default(); 3],
+            sizes: vec![px(100.); 3],
+            bounds: Bounds {
+                size: size(px(308.), px(100.)),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        state.update(cx, |state, cx| state.reset_panel_sizes(cx));
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.container_size(), px(300.));
+            assert_eq!(state.sizes(), &vec![px(100.); 3]);
+        });
+    }
+
+    #[gpui::test]
+    fn inserting_a_panel_reserves_its_new_gap(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ResizableState {
+            axis: Axis::Horizontal,
+            gap: px(4.),
+            panels: vec![ResizablePanelState::default(); 2],
+            sizes: vec![px(152.); 2],
+            bounds: Bounds {
+                size: size(px(308.), px(100.)),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        state.update(cx, |state, cx| state.insert_panel(None, None, cx));
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.container_size(), px(300.));
+            assert_eq!(state.sizes(), &vec![px(100.); 3]);
+        });
+    }
+
+    #[gpui::test]
+    fn rendered_panels_fit_with_exact_visual_gaps(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| GappedPanelHost);
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let first = cx.debug_bounds("gapped-panel-0").unwrap();
+        let second = cx.debug_bounds("gapped-panel-1").unwrap();
+        let third = cx.debug_bounds("gapped-panel-2").unwrap();
+        assert_eq!(first.size.width, px(100.));
+        assert_eq!(second.left() - first.right(), px(4.));
+        assert_eq!(third.left() - second.right(), px(4.));
+        assert_eq!(third.right() - first.left(), px(308.));
     }
 
     #[gpui::test]

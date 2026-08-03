@@ -395,6 +395,7 @@ pub struct Tab {
     children: Vec<AnyElement>,
     variant: TabVariant,
     size: Size,
+    corner_radius: Option<Pixels>,
     pub(super) disabled: bool,
     pub(super) selected: bool,
     pub(super) indicator_active: bool,
@@ -455,6 +456,7 @@ impl Default for Tab {
             suffix: None,
             variant: TabVariant::default(),
             size: Size::default(),
+            corner_radius: None,
             on_click: None,
         }
     }
@@ -475,6 +477,12 @@ impl Tab {
     /// Set the accessible label for the tab.
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Override the corner radius resolved from the tab variant.
+    pub fn corner_radius(mut self, radius: impl Into<Pixels>) -> Self {
+        self.corner_radius = Some(radius.into().max(px(0.)));
         self
     }
 
@@ -615,7 +623,9 @@ impl RenderOnce for Tab {
                 hover_style.borders.left = px(0.);
             }
         }
-        let radius = self.variant.radius(self.size, cx);
+        let radius = self
+            .corner_radius
+            .unwrap_or_else(|| self.variant.radius(self.size, cx));
         let inner_radius = self.variant.inner_radius(self.size, cx);
         let inner_paddings = self.variant.inner_paddings(self.size);
         let inner_margins = self.variant.inner_margins(self.size);
@@ -813,6 +823,8 @@ mod tests {
 
     struct ConstrainedTabHost;
 
+    struct GappedTabHost;
+
     impl Render for ConstrainedTabHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().w(px(160.)).child(
@@ -831,6 +843,32 @@ mod tests {
                                     .debug_selector(|| "tab-test-suffix".to_string()),
                             )
                             .debug_selector(|| "tab-test-body".to_string()),
+                    ),
+            )
+        }
+    }
+
+    impl Render for GappedTabHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(322.)).child(
+                TabBar::new("gapped-tabs")
+                    .w_full()
+                    .tab_gap(px(2.))
+                    .child(
+                        Tab::new()
+                            .min_w(px(160.))
+                            .max_w(px(160.))
+                            .corner_radius(px(6.))
+                            .label("First")
+                            .debug_selector(|| "tab-gap-first".to_string()),
+                    )
+                    .child(
+                        Tab::new()
+                            .min_w(px(160.))
+                            .max_w(px(160.))
+                            .corner_radius(px(6.))
+                            .label("Second")
+                            .debug_selector(|| "tab-gap-second".to_string()),
                     ),
             )
         }
@@ -855,6 +893,21 @@ mod tests {
         let tab = Tab::new().label("Acct").aria_label("Account settings");
 
         assert_eq!(tab.a11y_label(), Some("Account settings".into()));
+    }
+
+    #[gpui::test]
+    fn corner_radius_override_and_tab_gap_are_retained(cx: &mut TestAppContext) {
+        let tab = Tab::new().corner_radius(px(6.));
+        assert_eq!(tab.corner_radius, Some(px(6.)));
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| GappedTabHost);
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let first = cx.debug_bounds("tab-gap-first").unwrap();
+        let second = cx.debug_bounds("tab-gap-second").unwrap();
+        assert_eq!(second.left() - first.right(), px(2.));
     }
 
     #[gpui::test]

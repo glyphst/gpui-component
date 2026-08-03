@@ -49,6 +49,7 @@ pub struct TabBar {
     selected_index: Option<usize>,
     variant: TabVariant,
     size: Size,
+    tab_gap: Option<Pixels>,
     menu: bool,
     on_click: Option<Rc<dyn Fn(&usize, &mut Window, &mut App) + 'static>>,
 }
@@ -69,6 +70,7 @@ impl TabBar {
             size: Size::default(),
             last_empty_space: div().w_3().into_any_element(),
             selected_index: None,
+            tab_gap: None,
             on_click: None,
             menu: false,
         }
@@ -143,6 +145,12 @@ impl TabBar {
     /// Set the selected index of the TabBar.
     pub fn selected_index(mut self, index: usize) -> Self {
         self.selected_index = Some(index);
+        self
+    }
+
+    /// Set the spacing between tabs without changing the tab bar's outer layout.
+    pub fn tab_gap(mut self, gap: impl Into<Pixels>) -> Self {
+        self.tab_gap = Some(gap.into().max(px(0.)));
         self
     }
 
@@ -383,6 +391,7 @@ impl RenderOnce for TabBar {
                 (cx.theme().transparent.into(), Edges::all(px(0.)), gap)
             }
         };
+        let gap = self.tab_gap.unwrap_or(gap);
 
         let has_indicator = matches!(
             self.variant,

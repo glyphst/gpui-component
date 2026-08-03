@@ -7,7 +7,7 @@ use gpui::{
     Along, AnyElement, App, AppContext, Axis, Bounds, Context, Element, ElementId, Empty, Entity,
     EventEmitter, InteractiveElement as _, IntoElement, IsZero as _, MouseMoveEvent, MouseUpEvent,
     ParentElement, Pixels, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder,
+    prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -35,6 +35,7 @@ pub struct ResizablePanelGroup {
     state: Option<Entity<ResizableState>>,
     axis: Axis,
     size: Option<Pixels>,
+    gap: Pixels,
     children: Vec<ResizablePanel>,
     on_resize: Rc<dyn Fn(&Entity<ResizableState>, &mut Window, &mut App)>,
 }
@@ -48,6 +49,7 @@ impl ResizablePanelGroup {
             children: vec![],
             state: None,
             size: None,
+            gap: px(0.),
             on_resize: Rc::new(|_, _, _| {}),
         }
     }
@@ -91,6 +93,15 @@ impl ResizablePanelGroup {
     /// - When the axis is vertical, the size is the width of the group.
     pub fn size(mut self, size: Pixels) -> Self {
         self.size = Some(size);
+        self
+    }
+
+    /// Set the visible space between adjacent resizable panels.
+    ///
+    /// Gap space is excluded from the panel size budget so resizing and reset
+    /// operations continue to fit exactly inside the group.
+    pub fn gap(mut self, gap: impl Into<Pixels>) -> Self {
+        self.gap = gap.into().max(px(0.));
         self
     }
 
@@ -139,12 +150,13 @@ impl RenderOnce for ResizablePanelGroup {
         // Sync panels to the state
         let panels_count = self.children.len();
         state.update(cx, |state, cx| {
-            state.sync_panels_count(self.axis, panels_count, cx);
+            state.sync_panels_count(self.axis, panels_count, self.gap, cx);
         });
 
         container
             .id(self.id)
             .size_full()
+            .gap(self.gap)
             .children(
                 self.children
                     .into_iter()
