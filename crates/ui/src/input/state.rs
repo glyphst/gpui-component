@@ -26,6 +26,7 @@ use super::{
     DisplayMap, MASK_CHAR,
     blink_cursor::BlinkCursor,
     change::Change,
+    decorations::DecorationCollections,
     element::{EditorScrollbarSnapshot, TextElement},
     mask_pattern::{MaskPattern, normalize_number_input},
     mode::InputMode,
@@ -426,6 +427,7 @@ pub struct InputState {
     pub(super) active_span_edit: Option<Range<usize>>,
     /// Source range of the rich span currently under the pointer.
     hovered_span: Option<Range<usize>>,
+    pub(super) decorations: DecorationCollections,
 
     /// The mask pattern for formatting the input text
     pub(crate) mask_pattern: MaskPattern,
@@ -566,6 +568,7 @@ impl InputState {
             presentation: InputPresentation::new(&Rope::new(), &[]),
             active_span_edit: None,
             hovered_span: None,
+            decorations: DecorationCollections::default(),
             lsp: Lsp::default(),
             diagnostic_popover: None,
             context_menu_content: None,
@@ -1225,7 +1228,7 @@ impl InputState {
     /// Set the default value of the input field.
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         let text: SharedString = value.into();
-        self.text = Rope::from(text.as_str());
+        self.text = Rope::from(self.normalize_input(&text).as_ref());
         self.presentation = InputPresentation::new(&self.text, &self.spans);
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
@@ -2331,11 +2334,7 @@ impl InputState {
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
-            let mut new_text = clipboard.text().unwrap_or_default();
-            if !self.mode.is_multi_line() {
-                new_text = new_text.replace('\n', "");
-            }
-
+            let new_text = clipboard.text().unwrap_or_default();
             self.replace_text_in_range_silent(None, &new_text, window, cx);
             self.scroll_to(self.cursor(), None, cx);
         }
@@ -2825,10 +2824,16 @@ impl InputState {
     /// full-width number characters into their ASCII equivalents,
     /// e.g. `12。5` -> `12.5`.
     fn normalize_input<'a>(&self, new_text: &'a str) -> Cow<'a, str> {
-        if matches!(self.mask_pattern, MaskPattern::Number { .. }) {
+        let normalized = if matches!(self.mask_pattern, MaskPattern::Number { .. }) {
             normalize_number_input(new_text)
         } else {
             Cow::Borrowed(new_text)
+        };
+
+        if self.mode.is_single_line() && normalized.contains(['\n', '\r']) {
+            Cow::Owned(normalized.replace(['\n', '\r'], ""))
+        } else {
+            normalized
         }
     }
 
@@ -3275,6 +3280,11 @@ impl EntityInputHandler for InputState {
         }
 
         if mask_changed {
+            self.decorations.clear();
+        } else {
+            self.decorations.adjust_for_edit(&range, new_text.len());
+        }
+        if mask_changed {
             // A segment-based history entry no longer matches the masked
             // document, record a whole-document change instead, so that
             // undo/redo can restore the text exactly.
@@ -3385,6 +3395,7 @@ impl EntityInputHandler for InputState {
             }
         }
 
+        self.decorations.adjust_for_edit(&range, new_text.len());
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -3421,8 +3432,11 @@ impl EntityInputHandler for InputState {
             self.ime_marked_range = Some((range.start..range.start + new_text.len()).into());
             self.selected_range = new_selected_range_utf16
                 .as_ref()
-                .map(|range_utf16| self.range_from_utf16(range_utf16))
-                .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+                .map(|range_utf16| {
+                    let new_text = Rope::from(new_text);
+                    range.start + new_text.offset_utf16_to_offset(range_utf16.start)
+                        ..range.start + new_text.offset_utf16_to_offset(range_utf16.end)
+                })
                 .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len())
                 .into();
         }
@@ -4246,6 +4260,35 @@ ORDER BY id
         });
     }
 
+    #[gpui::test]
+    fn test_single_line_removes_newlines(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.default_value("default\nvalue"));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                assert_eq!(state.value(), "defaultvalue");
+
+                state.set_value("first\nsecond\r\nthird\rfourth", window, cx);
+                assert_eq!(state.value(), "firstsecondthirdfourth");
+
+                state.set_value("", window, cx);
+                state.insert("a\nb", window, cx);
+                assert_eq!(state.value(), "ab");
+            });
+
+            cx.write_to_clipboard(ClipboardItem::new_string("a\r\nb\nc\rd".to_string()));
+            input.update(cx, |state, cx| {
+                state.set_value("", window, cx);
+                state.paste(&Paste, window, cx);
+                assert_eq!(state.value(), "abcd");
+            });
+        });
+
+        cx.run_until_parked();
+    }
+
     /// `replace_all` on a multi-line (non-code-editor) input clears the
     /// selection to `0..0` and resets the scroll offset, but does not set a
     /// deferred scroll offset (single-line only).
@@ -4356,6 +4399,25 @@ ORDER BY id
                 // clamped + collapsed
                 s.set_selected_range(100..100, cx);
                 assert_eq!(s.selected_range(), 11..11);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_ime_selection_is_relative_to_replacement_start(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.default_value("你好 "));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_selected_range(7..7, cx);
+                state.replace_and_mark_text_in_range(None, "s", Some(1..1), window, cx);
+                state.replace_and_mark_text_in_range(None, "sh", Some(2..2), window, cx);
+
+                assert_eq!(state.value(), "你好 sh");
+                assert_eq!(state.selected_range(), 9..9);
+                assert_eq!(state.ime_marked_range, Some((7..9).into()));
             });
         });
     }

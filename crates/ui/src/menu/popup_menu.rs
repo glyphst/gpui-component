@@ -288,6 +288,10 @@ pub struct PopupMenu {
     pub(crate) menu_items: Vec<PopupMenuItem>,
     /// The focus handle of Entity to handle actions.
     pub(crate) action_context: Option<FocusHandle>,
+    /// The focus to restore on dismiss. Unlike `action_context`, this does not
+    /// change where actions are dispatched: they still bubble from the menu's
+    /// own focus path (through the trigger element's ancestors).
+    pub(crate) previous_focus_handle: Option<FocusHandle>,
     selected_index: Option<usize>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
@@ -326,6 +330,7 @@ impl PopupMenu {
         Self {
             focus_handle: cx.focus_handle(),
             action_context: None,
+            previous_focus_handle: None,
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
@@ -374,6 +379,24 @@ impl PopupMenu {
             if let PopupMenuItem::Submenu { menu, .. } = item {
                 menu.update(cx, |menu, cx| {
                     menu.set_action_context(action_context.clone(), cx);
+                });
+            }
+        }
+    }
+
+    /// Set the focus to restore when the menu is dismissed, without changing
+    /// where actions are dispatched.
+    pub(crate) fn set_previous_focus(
+        &mut self,
+        handle: Option<FocusHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        self.previous_focus_handle = handle.clone();
+
+        for item in &self.menu_items {
+            if let PopupMenuItem::Submenu { menu, .. } = item {
+                menu.update(cx, |menu, cx| {
+                    menu.set_previous_focus(handle.clone(), cx);
                 });
             }
         }
@@ -693,6 +716,38 @@ impl PopupMenu {
         self
     }
 
+    /// Replace all menu items by re-running a builder on this menu, keeping its
+    /// identity (focus, parent menu, layer priority).
+    ///
+    /// For menus whose content arrives asynchronously after the menu is shown,
+    /// e.g. swapping a "loading…" placeholder for the loaded items:
+    ///
+    /// ```ignore
+    /// cx.spawn_in(window, async move |menu, cx| {
+    ///     let items = fetch_items().await;
+    ///     _ = menu.update_in(cx, |menu, window, cx| {
+    ///         menu.rebuild(window, cx, |menu, _, _| {
+    ///             items.into_iter().fold(menu, |menu, item| {
+    ///                 menu.menu(item.label, Box::new(item.action))
+    ///             })
+    ///         });
+    ///     });
+    /// })
+    /// .detach();
+    /// ```
+    pub fn rebuild(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(Self, &mut Window, &mut Context<Self>) -> Self,
+    ) {
+        let mut menu = std::mem::replace(self, Self::new(cx));
+        menu.menu_items.clear();
+        menu.selected_index = None;
+        *self = f(menu, window, cx);
+        cx.notify();
+    }
+
     fn add_menu_item(
         &mut self,
         label: impl Into<SharedString>,
@@ -987,8 +1042,12 @@ impl PopupMenu {
         cx.emit(DismissEvent);
 
         // Focus back to the previous focused handle.
-        if let Some(action_context) = self.action_context.as_ref() {
-            window.focus(action_context, cx);
+        if let Some(handle) = self
+            .previous_focus_handle
+            .as_ref()
+            .or(self.action_context.as_ref())
+        {
+            window.focus(handle, cx);
         }
 
         let Some(parent_menu) = self.parent_menu.clone() else {
@@ -1040,6 +1099,7 @@ impl PopupMenu {
         match self
             .action_context
             .as_ref()
+            .or(self.previous_focus_handle.as_ref())
             .and_then(|handle| Kbd::binding_for_action_in(action.as_ref(), handle, window))
         {
             Some(kbd) => Some(kbd),
@@ -1324,6 +1384,24 @@ struct RenderOptions {
 impl Render for PopupMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_submenu_menu_anchor(window);
+
+        // Submenus attached via the public `item()` + `PopupMenuItem::submenu()`
+        // path (from contexts that only have the menu value, e.g. a table
+        // delegate's `context_menu`) have no parent wired at construction time.
+        // Wire them here so the dismiss chain, click-outside checks and keyboard
+        // navigation treat them the same as `submenu()`-built children.
+        let parent = cx.entity().downgrade();
+        let parent_priority = self.priority;
+        for item in &self.menu_items {
+            if let PopupMenuItem::Submenu { menu, .. } = item {
+                if menu.read(cx).parent_menu.is_none() {
+                    menu.update(cx, |menu, _| {
+                        menu.parent_menu = Some(parent.clone());
+                        menu.priority = parent_priority + 1;
+                    });
+                }
+            }
+        }
 
         let view = cx.entity().clone();
         let items_count = self.menu_items.len();

@@ -603,10 +603,16 @@ impl Paragraph {
 }
 
 #[derive(Debug, Clone)]
+struct CachedCodeBlockStyles {
+    /// The active theme used to compute `styles`.
+    highlight_theme: Arc<HighlightTheme>,
+    styles: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CodeBlock {
     lang: Option<SharedString>,
-    styles: Arc<Mutex<Option<Vec<(Range<usize>, HighlightStyle)>>>>,
-    highlight_theme: Arc<HighlightTheme>,
+    styles: Arc<Mutex<Option<CachedCodeBlockStyles>>>,
     state: Arc<Mutex<InlineState>>,
     pub span: Option<Span>,
 }
@@ -634,7 +640,6 @@ impl CodeBlock {
     pub(crate) fn new(
         code: SharedString,
         lang: Option<SharedString>,
-        highlight_theme: &HighlightTheme,
         span: Option<impl Into<Span>>,
     ) -> Self {
         let state = Arc::new(Mutex::new(InlineState::default()));
@@ -645,13 +650,15 @@ impl CodeBlock {
         Self {
             lang,
             styles: Arc::new(Mutex::new(None)),
-            highlight_theme: Arc::new(highlight_theme.clone()),
             state,
             span: span.map(|s| s.into()),
         }
     }
 
-    pub(crate) fn styles(&self) -> Vec<(Range<usize>, HighlightStyle)> {
+    pub(crate) fn styles(
+        &self,
+        highlight_theme: &Arc<HighlightTheme>,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
         let Some(lang) = &self.lang else {
             return Vec::new();
         };
@@ -660,8 +667,18 @@ impl CodeBlock {
             return Vec::new();
         };
 
-        if let Some(styles) = styles.as_ref() {
-            return styles.clone();
+        // Pointer identity is the common render-path fast check. If an
+        // equivalent theme is reallocated, adopt its Arc while preserving the
+        // computed styles so subsequent renders also use the fast path.
+        if let Some(cached) = styles.as_mut() {
+            if Arc::ptr_eq(&cached.highlight_theme, highlight_theme) {
+                return cached.styles.clone();
+            }
+
+            if cached.highlight_theme.as_ref() == highlight_theme.as_ref() {
+                cached.highlight_theme = highlight_theme.clone();
+                return cached.styles.clone();
+            }
         }
 
         let code = self.code();
@@ -691,9 +708,12 @@ impl CodeBlock {
             };
 
             highlighter.update(Some(edit), &code_rope, None);
-            highlighter.styles(&(0..code.len()), &self.highlight_theme)
+            highlighter.styles(&(0..code.len()), highlight_theme)
         });
-        *styles = Some(computed_styles.clone());
+        *styles = Some(CachedCodeBlockStyles {
+            highlight_theme: highlight_theme.clone(),
+            styles: computed_styles.clone(),
+        });
         computed_styles
     }
 
@@ -733,10 +753,14 @@ impl CodeBlock {
         let style = &node_cx.style;
 
         div()
+            .w_full()
+            .min_w_0()
             .when(!options.is_last, |this| this.pb(style.paragraph_gap))
             .child(
                 div()
                     .id(("codeblock", options.ix))
+                    .w_full()
+                    .min_w_0()
                     .p_3()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().tokens.muted)
@@ -748,7 +772,7 @@ impl CodeBlock {
                         "code",
                         self.state.clone(),
                         vec![],
-                        self.styles(),
+                        self.styles(&cx.theme().highlight_theme),
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -1231,6 +1255,46 @@ impl BlockNode {
 }
 
 impl BlockNode {
+    fn render_list_item_row(
+        content: AnyElement,
+        ix: usize,
+        options: NodeRenderOptions,
+        checked: Option<bool>,
+        cx: &mut App,
+    ) -> Div {
+        h_flex()
+            .w_full()
+            .flex_1()
+            .min_w_0()
+            .relative()
+            .items_start()
+            .content_start()
+            .when(!options.todo && checked.is_none(), |this| {
+                this.child(list_item_prefix(ix, options.ordered, options.depth))
+            })
+            .when_some(checked, |this, checked| {
+                // Todo list checkbox
+                this.child(
+                    div()
+                        .flex()
+                        .mt(rems(0.4))
+                        .mr_1p5()
+                        .size(rems(0.875))
+                        .items_center()
+                        .justify_center()
+                        .rounded(cx.theme().radius.half())
+                        .border_1()
+                        .border_color(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
+                        .when(checked, |this| {
+                            this.bg(cx.theme().tokens.primary)
+                                .child(Icon::new(IconName::Check).size_2().text_xs())
+                        }),
+                )
+            })
+            .child(div().flex_1().min_w_0().overflow_hidden().child(content))
+    }
+
     fn render_list_item(
         item: &BlockNode,
         ix: usize,
@@ -1280,7 +1344,7 @@ impl BlockNode {
                                             v_flex().child(preceding_row).child(
                                                 div()
                                                     .w_full()
-                                                    .pl(rems(0.75))
+                                                    .pl(rems(1.))
                                                     .overflow_hidden()
                                                     .child(text),
                                             ),
@@ -1289,48 +1353,9 @@ impl BlockNode {
                                     }
                                 }
 
-                                items.push(
-                                    h_flex()
-                                        .w_full()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .relative()
-                                        .items_start()
-                                        .content_start()
-                                        .when(!options.todo && checked.is_none(), |this| {
-                                            this.child(list_item_prefix(
-                                                ix,
-                                                options.ordered,
-                                                options.depth,
-                                            ))
-                                        })
-                                        .when_some(*checked, |this, checked| {
-                                            // Todo list checkbox
-                                            this.child(
-                                                div()
-                                                    .flex()
-                                                    .mt(rems(0.4))
-                                                    .mr_1p5()
-                                                    .size(rems(0.875))
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .rounded(cx.theme().radius.half())
-                                                    .border_1()
-                                                    .border_color(cx.theme().primary)
-                                                    .text_color(cx.theme().primary_foreground)
-                                                    .when(checked, |this| {
-                                                        this.bg(cx.theme().tokens.primary).child(
-                                                            Icon::new(IconName::Check)
-                                                                .size_2()
-                                                                .text_xs(),
-                                                        )
-                                                    }),
-                                            )
-                                        })
-                                        .child(
-                                            div().flex_1().min_w_0().overflow_hidden().child(text),
-                                        ),
-                                );
+                                items.push(Self::render_list_item_row(
+                                    text, ix, options, *checked, cx,
+                                ));
                             }
                             BlockNode::List { .. } => {
                                 items.push(div().ml(rems(1.)).child(child.render_block(
@@ -1345,7 +1370,47 @@ impl BlockNode {
                                     cx,
                                 )));
                             }
-                            _ => {}
+                            BlockNode::Root { .. }
+                            | BlockNode::Heading { .. }
+                            | BlockNode::Blockquote { .. }
+                            | BlockNode::CodeBlock(_)
+                            | BlockNode::Custom(_)
+                            | BlockNode::Table(_)
+                            | BlockNode::HorizontalRule { .. } => {
+                                let block = child.render_block(
+                                    NodeRenderOptions {
+                                        depth: options.depth + 1,
+                                        todo: checked.is_some(),
+                                        is_last: true,
+                                        ..options
+                                    },
+                                    node_cx,
+                                    window,
+                                    cx,
+                                );
+
+                                if child_ix == 0 {
+                                    items.push(Self::render_list_item_row(
+                                        block, ix, options, *checked, cx,
+                                    ));
+                                } else {
+                                    // Indent continuation blocks to align with a
+                                    // nested sub-list (`ml(rems(1.))`) and with
+                                    // continuation paragraphs.
+                                    items.push(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .pl(rems(1.))
+                                            .overflow_hidden()
+                                            .child(block),
+                                    );
+                                }
+                            }
+                            BlockNode::ListItem { .. }
+                            | BlockNode::Break { .. }
+                            | BlockNode::Definition { .. }
+                            | BlockNode::Unknown => {}
                         }
                     }
                     items
@@ -1681,6 +1746,8 @@ impl BlockNode {
                 children, ordered, ..
             } => v_flex()
                 .id((if *ordered { "ol" } else { "ul" }, ix))
+                .w_full()
+                .min_w_0()
                 .pb(mb)
                 .children({
                     let mut items = Vec::with_capacity(children.len());
@@ -1741,21 +1808,27 @@ impl BlockNode {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "tree-sitter")]
+    use crate::{
+        Theme, ThemeMode,
+        text::{TextView, TextViewState},
+    };
+    #[cfg(feature = "tree-sitter")]
+    use gpui::{AppContext as _, Context, Entity, Render, TestAppContext, VisualTestContext};
+
+    #[cfg(feature = "tree-sitter")]
+    fn cached_highlight_theme(block: &CodeBlock) -> Option<Arc<HighlightTheme>> {
+        block
+            .styles
+            .lock()
+            .ok()
+            .and_then(|styles| styles.as_ref().map(|styles| styles.highlight_theme.clone()))
+    }
+
     #[test]
     fn code_block_equality_includes_code_content() {
-        let theme = HighlightTheme::default_light();
-        let first = CodeBlock::new(
-            "let value = 1;".into(),
-            Some("rust".into()),
-            &theme,
-            None::<Span>,
-        );
-        let second = CodeBlock::new(
-            "let value = 2;".into(),
-            Some("rust".into()),
-            &theme,
-            None::<Span>,
-        );
+        let first = CodeBlock::new("let value = 1;".into(), Some("rust".into()), None::<Span>);
+        let second = CodeBlock::new("let value = 2;".into(), Some("rust".into()), None::<Span>);
 
         assert_ne!(first, second);
     }
@@ -1770,13 +1843,9 @@ mod tests {
             cache.borrow_mut().remove(&lang);
         });
 
-        let unknown_block = CodeBlock::new(
-            "{\"value\": 1}".into(),
-            Some(lang.clone()),
-            &theme,
-            None::<Span>,
-        );
-        _ = unknown_block.styles();
+        let unknown_block =
+            CodeBlock::new("{\"value\": 1}".into(), Some(lang.clone()), None::<Span>);
+        _ = unknown_block.styles(&theme);
 
         let cached_language = CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
             cache
@@ -1802,13 +1871,9 @@ mod tests {
             ),
         );
 
-        let registered_block = CodeBlock::new(
-            "{\"value\": 2}".into(),
-            Some(lang.clone()),
-            &theme,
-            None::<Span>,
-        );
-        _ = registered_block.styles();
+        let registered_block =
+            CodeBlock::new("{\"value\": 2}".into(), Some(lang.clone()), None::<Span>);
+        _ = registered_block.styles(&theme);
 
         let cached_language = CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
             cache
@@ -1817,5 +1882,160 @@ mod tests {
                 .map(|highlighter| highlighter.language().clone())
         });
         assert_eq!(cached_language.as_deref(), Some(lang.as_ref()));
+    }
+
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn code_block_styles_follow_the_current_highlight_theme() {
+        let lang = SharedString::from("json-theme-cache-test");
+        let light_theme = HighlightTheme::default_light();
+        let dark_theme = HighlightTheme::default_dark();
+        let code = SharedString::from(r#"{"value": 42}"#);
+        let number_range = code.find("42").unwrap()..code.find("42").unwrap() + 2;
+
+        let light_number = light_theme.style("number").and_then(|style| style.color);
+        let dark_number = dark_theme.style("number").and_then(|style| style.color);
+        assert_ne!(
+            light_number, dark_number,
+            "the test themes must use different number colors"
+        );
+
+        CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
+            cache.borrow_mut().remove(&lang);
+        });
+        LanguageRegistry::singleton().register(
+            lang.as_ref(),
+            &crate::highlighter::LanguageConfig::new(
+                lang.clone(),
+                tree_sitter_json::LANGUAGE.into(),
+                vec![],
+                "(number) @number",
+                "",
+                "",
+            ),
+        );
+
+        let block = CodeBlock::new(code.clone(), Some(lang), None::<Span>);
+        let light_styles = block.styles(&light_theme);
+        let cached_light_theme = cached_highlight_theme(&block).unwrap();
+        assert!(Arc::ptr_eq(&cached_light_theme, &light_theme));
+
+        let equivalent_light_theme = Arc::new(light_theme.as_ref().clone());
+        let repeated_light_styles = block.styles(&equivalent_light_theme);
+        assert_eq!(repeated_light_styles, light_styles);
+        assert!(
+            Arc::ptr_eq(
+                &cached_highlight_theme(&block).unwrap(),
+                &equivalent_light_theme
+            ),
+            "an equivalent replacement should become the cache identity"
+        );
+        assert_eq!(block.styles(&equivalent_light_theme), light_styles);
+
+        let dark_styles = block.styles(&dark_theme);
+        assert_eq!(
+            cached_highlight_theme(&block).as_deref(),
+            Some(dark_theme.as_ref())
+        );
+
+        let color_for_number = |styles: &[(Range<usize>, HighlightStyle)]| -> Option<Hsla> {
+            styles
+                .iter()
+                .find(|(range, _)| {
+                    range.start <= number_range.start && range.end >= number_range.end
+                })
+                .and_then(|(_, style)| style.color)
+        };
+
+        assert_eq!(color_for_number(&light_styles), light_number);
+        assert_eq!(
+            color_for_number(&dark_styles),
+            dark_number,
+            "a theme change must not reuse syntax styles from the previous theme"
+        );
+    }
+
+    #[cfg(feature = "tree-sitter")]
+    #[gpui::test]
+    fn rendered_markdown_code_block_follows_theme_without_reparsing(cx: &mut TestAppContext) {
+        struct CodeBlockThemeRoot {
+            text_view: Entity<TextViewState>,
+        }
+
+        impl Render for CodeBlockThemeRoot {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(480.)).child(TextView::new(&self.text_view))
+            }
+        }
+
+        let lang = SharedString::from("json-theme-render-test");
+        LanguageRegistry::singleton().register(
+            lang.as_ref(),
+            &crate::highlighter::LanguageConfig::new(
+                lang.clone(),
+                tree_sitter_json::LANGUAGE.into(),
+                vec![],
+                "(number) @number",
+                "",
+                "",
+            ),
+        );
+
+        cx.update(crate::init);
+        let markdown = format!("```{lang}\n{{\"value\": 42}}\n```");
+        let (view, cx) = cx.add_window_view(|_, cx| CodeBlockThemeRoot {
+            text_view: cx.new(|cx| TextViewState::markdown(&markdown, cx)),
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let light_theme = cx.update(|_, cx| cx.theme().highlight_theme.clone());
+        let light_block = view.read_with(cx, |root, cx| {
+            let state = root.text_view.read(cx);
+            let BlockNode::CodeBlock(block) = &state.parsed_content.document.blocks[0] else {
+                panic!("expected a code block");
+            };
+
+            block.clone()
+        });
+        let cached_light_theme = cached_highlight_theme(&light_block)
+            .expect("initial render should populate the highlight cache");
+        assert_eq!(cached_light_theme.as_ref(), light_theme.as_ref());
+
+        cx.update(|window, cx| {
+            Theme::change(ThemeMode::Dark, Some(&mut *window), cx);
+            let _ = window.draw(cx);
+        });
+
+        let dark_theme = cx.update(|_, cx| cx.theme().highlight_theme.clone());
+        let dark_block = view.read_with(cx, |root, cx| {
+            let state = root.text_view.read(cx);
+            let BlockNode::CodeBlock(block) = &state.parsed_content.document.blocks[0] else {
+                panic!("expected a code block");
+            };
+
+            block.clone()
+        });
+        let cached_dark_theme = cached_highlight_theme(&dark_block)
+            .expect("theme-change render should refresh the highlight cache");
+
+        assert_ne!(
+            light_theme.as_ref(),
+            dark_theme.as_ref(),
+            "the test themes must have distinct highlight palettes"
+        );
+        assert!(
+            Arc::ptr_eq(&dark_block.styles, &light_block.styles),
+            "changing the theme must not require reparsing the Markdown document"
+        );
+        assert_eq!(cached_dark_theme.as_ref(), dark_theme.as_ref());
     }
 }

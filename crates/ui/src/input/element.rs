@@ -21,7 +21,7 @@ use crate::{
     scroll::Scrollbar,
 };
 
-use super::{InputState, LastLayout, WhitespaceIndicators, mode::InputMode};
+use super::{InputState, LastLayout, TextDecoration, WhitespaceIndicators, mode::InputMode};
 
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
@@ -31,6 +31,49 @@ const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
 const SPAN_VERTICAL_INSET: Pixels = px(2.);
 const SPAN_EDITABLE_VERTICAL_INSET: Pixels = px(3.);
+
+fn compose_decorations(
+    mut styles: Vec<(Range<usize>, HighlightStyle)>,
+    decorations: impl IntoIterator<Item = (Range<usize>, HighlightStyle)>,
+    visible_byte_range: Range<usize>,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    let mut visible_decorations = decorations
+        .into_iter()
+        .filter_map(|(range, style)| {
+            let range =
+                range.start.max(visible_byte_range.start)..range.end.min(visible_byte_range.end);
+            (!range.is_empty()).then_some((range, style))
+        })
+        .peekable();
+
+    if visible_decorations.peek().is_none() {
+        return (!styles.is_empty()).then_some(styles);
+    }
+    if styles.is_empty() {
+        styles.push((visible_byte_range.clone(), HighlightStyle::default()));
+    }
+
+    Some(gpui::combine_highlights(visible_decorations, styles).collect())
+}
+
+fn compose_decoration_collections<'a>(
+    mut styles: Vec<(Range<usize>, HighlightStyle)>,
+    collections: impl IntoIterator<Item = &'a [TextDecoration]>,
+    visible_byte_range: Range<usize>,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    for decorations in collections {
+        styles = compose_decorations(
+            styles,
+            decorations
+                .iter()
+                .map(|decoration| (decoration.range.clone(), decoration.style)),
+            visible_byte_range.clone(),
+        )
+        .unwrap_or_default();
+    }
+
+    (!styles.is_empty()).then_some(styles)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
@@ -217,6 +260,22 @@ use super::MASK_CHAR;
 /// `char_index * MASK_CHAR.len_utf8()`.
 fn masked_display_offset(text: &Rope, original_offset: usize) -> usize {
     text.offset_to_char_index(original_offset) * MASK_CHAR.len_utf8()
+}
+
+/// Move the IME marked range (tracked against the original text) into the display text
+/// coordinate space, so that a run boundary can't land inside a multi-byte `MASK_CHAR`
+/// and panic text shaping on a non-char-boundary slice.
+fn ime_marked_display_range(
+    text: &Rope,
+    marked_range: Option<Range<usize>>,
+    masked: bool,
+) -> Option<Range<usize>> {
+    let marked = marked_range?;
+    if masked {
+        Some(masked_display_offset(text, marked.start)..masked_display_offset(text, marked.end))
+    } else {
+        Some(marked)
+    }
 }
 
 /// Minimum pixel padding the cursor is kept clear of the viewport's
@@ -1452,9 +1511,29 @@ impl TextElement {
                 diagnostics,
                 ..
             } => (highlighter.borrow_mut(), diagnostics),
-            _ => return None,
+            _ => {
+                return (!state.masked)
+                    .then(|| {
+                        compose_decoration_collections(
+                            Vec::new(),
+                            state.decorations.iter(),
+                            visible_byte_range,
+                        )
+                    })
+                    .flatten();
+            }
         };
-        let highlighter = highlighter.as_mut()?;
+        let Some(highlighter) = highlighter.as_mut() else {
+            return (!state.masked)
+                .then(|| {
+                    compose_decoration_collections(
+                        Vec::new(),
+                        state.decorations.iter(),
+                        visible_byte_range,
+                    )
+                })
+                .flatten();
+        };
 
         let mut styles = Vec::with_capacity(visible_buffer_lines.len());
 
@@ -1527,10 +1606,16 @@ impl TextElement {
             styles.push(hover_style);
         }
 
-        // Compose order: tree-sitter (base) -> custom (overlay) -> diagnostics (top).
-        // Diagnostics keep highest priority so errors remain visible regardless
-        // of language coloring.
+        // Compose tree-sitter, semantic, application, then diagnostic styles.
         styles = gpui::combine_highlights(custom_styles, styles).collect();
+        if !state.masked {
+            styles = compose_decoration_collections(
+                styles,
+                state.decorations.iter(),
+                visible_byte_range.clone(),
+            )
+            .unwrap_or_default();
+        }
         styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
 
         Some(styles)
@@ -1865,60 +1950,44 @@ impl Element for TextElement {
             }),
             strikethrough: None,
         };
-        let ime_marked_display_range = state
-            .ime_marked_range
-            .as_ref()
-            .map(|range| state.display_range_for_source(&range.clone().into()));
-
-        let runs = if !is_empty {
-            if let Some(highlight_styles) = highlight_styles {
-                let mut runs = Vec::with_capacity(highlight_styles.len());
-
-                runs.extend(highlight_styles.iter().map(|(range, style)| {
-                    let mut run = text_style.clone().highlight(*style).to_run(range.len());
-                    if let Some(ime_marked_range) = &ime_marked_display_range {
-                        if range.start >= ime_marked_range.start
-                            && range.end <= ime_marked_range.end
-                        {
-                            run.color = marked_run.color;
-                            run.strikethrough = marked_run.strikethrough;
-                            run.underline = marked_run.underline;
-                        }
-                    }
-
-                    if disabled {
-                        run.color = run.color.opacity(0.5)
-                    }
-
-                    run
-                }));
-
-                runs.into_iter().filter(|run| run.len > 0).collect()
+        let ime_marked_range = ime_marked_display_range(
+            &text,
+            state.ime_marked_range.as_ref().map(|m| m.start..m.end),
+            state.masked,
+        )
+        .map(|range| {
+            if state.masked {
+                range
             } else {
-                vec![run]
+                state.display_range_for_source(&range)
             }
-        } else if let Some(ime_marked_range) = &ime_marked_display_range {
-            // IME marked text
-            vec![
-                TextRun {
-                    len: ime_marked_range.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: ime_marked_range.end - ime_marked_range.start,
-                    underline: marked_run.underline,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - ime_marked_range.end,
-                    ..run.clone()
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
+        });
+
+        let runs = if let (false, Some(highlight_styles)) = (is_empty, highlight_styles) {
+            let mut runs = Vec::with_capacity(highlight_styles.len() + 2);
+
+            for (range, style) in &highlight_styles {
+                let mut run = text_style.clone().highlight(*style).to_run(range.len());
+                if disabled {
+                    run.color = run.color.opacity(0.5);
+                }
+
+                runs.extend(split_run_for_ime_underline(
+                    run,
+                    range.clone(),
+                    ime_marked_range.clone(),
+                    marked_run.underline,
+                ));
+            }
+            runs
         } else {
-            vec![run]
+            split_run_for_ime_underline(
+                run,
+                0..display_text.len(),
+                ime_marked_range,
+                marked_run.underline,
+            )
+            .into_vec()
         };
 
         let document_colors = state
@@ -2552,6 +2621,46 @@ pub(super) fn runs_for_range(
     result
 }
 
+fn split_run_for_ime_underline(
+    run: TextRun,
+    run_range: Range<usize>,
+    marked_range: Option<Range<usize>>,
+    marked_underline: Option<UnderlineStyle>,
+) -> SmallVec<[TextRun; 3]> {
+    if run.len == 0 {
+        return SmallVec::new();
+    }
+
+    let Some(marked) = marked_range else {
+        return [run].into_iter().collect();
+    };
+
+    let intersection_start = run_range.start.max(marked.start);
+    let intersection_end = run_range.end.min(marked.end);
+    if intersection_start >= intersection_end {
+        return [run].into_iter().collect();
+    }
+
+    [
+        TextRun {
+            len: intersection_start - run_range.start,
+            ..run.clone()
+        },
+        TextRun {
+            len: intersection_end - intersection_start,
+            underline: marked_underline,
+            ..run.clone()
+        },
+        TextRun {
+            len: run_range.end - intersection_end,
+            ..run
+        },
+    ]
+    .into_iter()
+    .filter(|run| run.len > 0)
+    .collect()
+}
+
 fn split_runs_by_bg_segments(
     start_offset: usize,
     runs: &[TextRun],
@@ -2630,6 +2739,50 @@ mod tests {
             TextElement::inset_span_fragment(fragment, px(3.)),
             Bounds::new(point(px(10.), px(23.)), size(px(80.), px(14.)))
         );
+    }
+
+    #[test]
+    fn test_plain_text_decorations_include_unstyled_gaps() {
+        let decoration = HighlightStyle {
+            background_color: Some(gpui::red()),
+            ..Default::default()
+        };
+        let styles = compose_decorations(Vec::new(), [(2..5, decoration)], 0..10).unwrap();
+
+        assert_eq!(
+            styles
+                .iter()
+                .map(|(range, _)| range.clone())
+                .collect::<Vec<_>>(),
+            vec![0..2, 2..5, 5..10]
+        );
+        assert_eq!(styles[0].1, HighlightStyle::default());
+        assert_eq!(styles[1].1.background_color, Some(gpui::red()));
+        assert_eq!(styles[2].1, HighlightStyle::default());
+    }
+
+    #[test]
+    fn test_first_decoration_collection_has_precedence() {
+        let first = [TextDecoration::new(
+            0..4,
+            HighlightStyle {
+                background_color: Some(gpui::red()),
+                ..Default::default()
+            },
+        )];
+        let second = [TextDecoration::new(
+            0..4,
+            HighlightStyle {
+                background_color: Some(gpui::blue()),
+                ..Default::default()
+            },
+        )];
+
+        let styles =
+            compose_decoration_collections(Vec::new(), [&first[..], &second[..]], 0..4).unwrap();
+
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].1.background_color, Some(gpui::red()));
     }
 
     #[test]
@@ -2741,6 +2894,97 @@ mod tests {
         assert_runs(runs_for_range(&runs, 3, &(0..3)), &[1, 2]);
         assert_runs(runs_for_range(&runs, 3, &(2..10)), &[4, 1, 3]);
         assert_runs(runs_for_range(&runs, 9, &(0..8)), &[1, 7]);
+    }
+
+    #[test]
+    fn test_split_runs_preserve_ime_underline_across_highlight_boundaries() {
+        let underline = UnderlineStyle {
+            thickness: px(1.),
+            color: Some(gpui::black()),
+            wavy: false,
+        };
+
+        let runs = [0..4, 4..10]
+            .into_iter()
+            .flat_map(|range| {
+                split_run_for_ime_underline(
+                    TextStyle::default().to_run(range.len()),
+                    range,
+                    Some(2..7),
+                    Some(underline),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.len, run.underline.is_some()))
+                .collect::<Vec<_>>(),
+            vec![(2, false), (2, true), (3, true), (3, false)]
+        );
+    }
+
+    #[test]
+    fn test_split_run_applies_ime_underline_without_highlighting() {
+        let underline = UnderlineStyle {
+            thickness: px(1.),
+            color: Some(gpui::black()),
+            wavy: false,
+        };
+
+        let runs = split_run_for_ime_underline(
+            TextStyle::default().to_run(10),
+            0..10,
+            Some(2..7),
+            Some(underline),
+        );
+
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.len, run.underline.is_some()))
+                .collect::<Vec<_>>(),
+            vec![(2, false), (5, true), (3, false)]
+        );
+        assert!(
+            split_run_for_ime_underline(TextStyle::default().to_run(0), 0..0, None, None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_masked_ime_underline_splits_on_mask_char_boundaries() {
+        let underline = UnderlineStyle {
+            thickness: px(1.),
+            color: Some(gpui::black()),
+            wavy: false,
+        };
+        let text = Rope::from("abcdef");
+        let mask_len = MASK_CHAR.len_utf8();
+
+        assert_eq!(
+            ime_marked_display_range(&text, Some(4..6), false),
+            Some(4..6)
+        );
+        assert_eq!(ime_marked_display_range(&text, None, true), None);
+        assert_eq!(
+            ime_marked_display_range(&text, Some(4..6), true),
+            Some(4 * mask_len..6 * mask_len)
+        );
+
+        let display_text = MASK_CHAR.to_string().repeat(text.chars().count());
+        let runs = split_run_for_ime_underline(
+            TextStyle::default().to_run(display_text.len()),
+            0..display_text.len(),
+            ime_marked_display_range(&text, Some(4..6), true),
+            Some(underline),
+        );
+
+        let mut offset = 0;
+        for run in &runs {
+            assert!(display_text.is_char_boundary(offset));
+            offset += run.len;
+        }
+        assert_eq!(offset, display_text.len());
     }
 
     #[test]

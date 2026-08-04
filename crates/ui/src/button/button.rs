@@ -1,10 +1,11 @@
 use std::rc::Rc;
 
 use crate::{
-    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, IconName, Selectable,
-    Sizable, Size, StyleSized, StyledExt,
+    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, Selectable, Sizable, Size,
+    StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
+    select::Caret,
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
@@ -191,6 +192,7 @@ pub struct Button {
     children: Vec<AnyElement>,
     disabled: bool,
     pub(crate) selected: bool,
+    toggled: Option<bool>,
     variant: ButtonVariant,
     rounded: ButtonRounded,
     outline: bool,
@@ -234,6 +236,7 @@ impl Button {
             truncate_label: false,
             disabled: false,
             selected: false,
+            toggled: None,
             variant: ButtonVariant::default(),
             rounded: ButtonRounded::Medium,
             border_corners: Corners {
@@ -380,6 +383,17 @@ impl Button {
         self
     }
 
+    /// Expose this button as a toggle button to assistive technology, with
+    /// `toggled` as its pressed state.
+    ///
+    /// Only affects accessibility metadata. Use [`Selectable::selected`] for
+    /// the selected styling, and call this in addition when the button really
+    /// is a toggle, otherwise the button stays an ordinary push button.
+    pub fn toggled(mut self, toggled: bool) -> Self {
+        self.toggled = Some(toggled);
+        self
+    }
+
     #[inline]
     fn clickable(&self) -> bool {
         !(self.disabled || self.loading) && self.on_click.is_some()
@@ -453,6 +467,7 @@ impl RenderOnce for Button {
             Size::Size(v) => Size::Size(v * 0.75),
             _ => self.size,
         };
+        let has_content = self.icon.is_some() || self.label.is_some() || !self.children.is_empty();
 
         let focus_handle = window
             .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
@@ -477,7 +492,13 @@ impl RenderOnce for Button {
             .when_some(self.label.as_ref(), |this, label| {
                 this.aria_label(label.clone())
             })
-            .aria_selected(self.selected)
+            .when_some(self.toggled, |this, toggled| {
+                this.aria_toggled(if toggled {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                })
+            })
             .when(!self.disabled, |this| {
                 this.track_focus(
                     &focus_handle
@@ -491,7 +512,10 @@ impl RenderOnce for Button {
             .items_center()
             .justify_center()
             .cursor_default()
-            .when(self.variant.is_link(), |this| this.cursor_pointer())
+            .when(
+                !self.disabled && (self.variant.is_link() || self.variant.is_text()),
+                |this| this.cursor_pointer(),
+            )
             .when(cx.theme().shadow && normal_style.shadow, |this| {
                 this.shadow_xs()
             })
@@ -511,11 +535,15 @@ impl RenderOnce for Button {
                         Size::XSmall => this.h_5().px_1().when(self.compact, |this| this.min_w_5()),
                         Size::Small => this
                             .h_6()
-                            .px_3()
+                            .px_2()
                             .when(self.compact, |this| this.min_w_6().px_1p5()),
-                        _ => this
+                        Size::Medium => this
                             .h_8()
-                            .px_4()
+                            .px_2p5()
+                            .when(self.compact, |this| this.min_w_8().px_2()),
+                        Size::Large => this
+                            .h_8()
+                            .px_3()
                             .when(self.compact, |this| this.min_w_8().px_2()),
                     }
                 }
@@ -636,14 +664,8 @@ impl RenderOnce for Button {
                     })
                     .children(self.children)
                     .when(self.dropdown_caret, |this| {
-                        this.justify_between().child(
-                            Icon::new(IconName::ChevronDown).xsmall().text_color(
-                                match self.disabled {
-                                    true => normal_style.fg.opacity(0.3),
-                                    false => normal_style.fg.opacity(0.5),
-                                },
-                            ),
-                        )
+                        this.when(has_content, |this| this.justify_between())
+                            .child(Caret::new(self.size).text_color(normal_style.fg.opacity(0.75)))
                     })
             })
             .when(self.loading && !self.disabled, |this| {
@@ -826,7 +848,7 @@ impl ButtonVariant {
                 }
             }
             Self::Link => cx.theme().link,
-            Self::Text => cx.theme().foreground,
+            Self::Text => cx.theme().foreground.opacity(0.9),
             Self::Custom(colors) => colors.color,
         }
     }
@@ -882,10 +904,8 @@ impl ButtonVariant {
         }
     }
 
-    fn shadow(&self, outline: bool, _: &App) -> bool {
+    fn shadow(&self, _outline: bool, _: &App) -> bool {
         match self {
-            Self::Default => true,
-            Self::Primary | Self::Secondary | Self::Danger => outline,
             Self::Custom(c) => c.shadow,
             _ => false,
         }
@@ -977,6 +997,7 @@ impl ButtonVariant {
         let border = self.border_color(outline, cx);
         let fg = match self {
             Self::Link => cx.theme().link_hover,
+            Self::Text => cx.theme().foreground,
             _ => self.text_color(outline, cx),
         };
 
@@ -1195,6 +1216,7 @@ mod tests {
         assert!(!button.loading);
         assert!(!button.disabled);
         assert!(!button.selected);
+        assert_eq!(button.toggled, None);
         assert_eq!(button.tab_index, 1);
         assert!(button.tab_stop);
         assert!(!button.dropdown_caret);
@@ -1214,6 +1236,57 @@ mod tests {
         // Loading button should not be clickable
         let loading = Button::new("test").loading(true).on_click(|_, _, _| {});
         assert!(!loading.clickable());
+    }
+
+    /// `selected` is styling only; the toggle state must be opted into, so that
+    /// ordinary buttons are not announced as toggle buttons.
+    #[gpui::test]
+    fn test_button_toggle_state_is_opt_in(cx: &mut gpui::TestAppContext) {
+        use crate::ElementExt as _;
+        use gpui::{Element as _, IntoElement as _, Render, accesskit::Toggled};
+        use std::sync::{Arc, Mutex};
+
+        type States = Arc<Mutex<Vec<Option<Toggled>>>>;
+
+        struct ButtonA11yProbe {
+            states: States,
+        }
+
+        impl Render for ButtonA11yProbe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let states = self.states.clone();
+                div().on_prepaint(move |_, window, cx| {
+                    let mut toggled_of = |button: Button| {
+                        let mut node = gpui::accesskit::Node::new(Role::Button);
+                        button
+                            .render(window, cx)
+                            .into_element()
+                            .write_a11y_info(&mut node);
+                        node.toggled()
+                    };
+
+                    *states.lock().unwrap() = vec![
+                        toggled_of(Button::new("ordinary").label("Ordinary")),
+                        toggled_of(Button::new("selected").label("Selected").selected(true)),
+                        toggled_of(Button::new("off").label("Off").toggled(false)),
+                        toggled_of(Button::new("on").label("On").toggled(true)),
+                    ];
+                })
+            }
+        }
+
+        cx.update(crate::init);
+        let states: States = Arc::new(Mutex::new(Vec::new()));
+        let captured = states.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| ButtonA11yProbe { states });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![None, None, Some(Toggled::False), Some(Toggled::True)]
+        );
     }
 
     #[gpui::test]
