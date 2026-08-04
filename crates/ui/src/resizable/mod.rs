@@ -57,6 +57,44 @@ impl ResizableState {
         &self.sizes
     }
 
+    /// Restore proportional panel sizes before or after the group has been
+    /// laid out. The ratios are normalized and applied to the current
+    /// container size; before first layout, an arbitrary total preserves the
+    /// proportions until the real bounds arrive.
+    ///
+    /// Returns `false` without changing state when the ratio list is empty or
+    /// contains a non-finite or non-positive value.
+    pub fn restore_panel_ratios(&mut self, ratios: &[f32], cx: &mut Context<Self>) -> bool {
+        if ratios.is_empty()
+            || ratios
+                .iter()
+                .any(|ratio| !ratio.is_finite() || *ratio <= 0.0)
+        {
+            return false;
+        }
+        let total = ratios.iter().sum::<f32>();
+        if !total.is_finite() || total <= f32::EPSILON {
+            return false;
+        }
+
+        let available = self.container_size().as_f32();
+        let available = if available.is_finite() && available > 0.0 {
+            available
+        } else {
+            1_000.0
+        };
+        self.panels = vec![ResizablePanelState::default(); ratios.len()];
+        self.sizes = ratios
+            .iter()
+            .map(|ratio| px(available * ratio / total))
+            .collect();
+        for (panel, size) in self.panels.iter_mut().zip(self.sizes.iter().copied()) {
+            panel.size = Some(size);
+        }
+        cx.notify();
+        true
+    }
+
     /// Programmatically resize the panel at `ix` to `size`, redistributing
     /// space among siblings using the same logic as a drag.
     ///
@@ -408,6 +446,22 @@ mod tests {
     struct HandleHost {
         axis: Axis,
         gap: Pixels,
+    }
+
+    #[gpui::test]
+    fn restored_panel_ratios_are_normalized(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ResizableState::default());
+        state.update(cx, |state, cx| {
+            assert!(state.restore_panel_ratios(&[1.0, 3.0], cx));
+        });
+        let sizes = state.read_with(cx, |state, _| state.sizes().clone());
+        assert_eq!(sizes.len(), 2);
+        assert!((sizes[0].as_f32() / sizes[1].as_f32() - 1.0 / 3.0).abs() < 0.001);
+
+        state.update(cx, |state, cx| {
+            assert!(!state.restore_panel_ratios(&[1.0, f32::NAN], cx));
+        });
+        assert_eq!(state.read_with(cx, |state, _| state.sizes().clone()), sizes);
     }
 
     impl Render for GappedPanelHost {
