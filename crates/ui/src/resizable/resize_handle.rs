@@ -22,6 +22,7 @@ pub(crate) fn resize_handle<T: 'static, E: 'static + Render>(
 pub(crate) struct ResizeHandle<T: 'static, E: 'static + Render> {
     id: ElementId,
     axis: Axis,
+    gap: Pixels,
     drag_value: Option<Rc<T>>,
     placement: Option<DockPlacement>,
     on_drag: Option<Rc<dyn Fn(&Point<Pixels>, &mut Window, &mut App) -> Entity<E>>>,
@@ -37,8 +38,14 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             drag_value: None,
             placement: None,
             axis,
+            gap: px(0.),
             on_double_click: None,
         }
+    }
+
+    pub(crate) fn gap(mut self, gap: Pixels) -> Self {
+        self.gap = gap.max(px(0.));
+        self
     }
 
     pub(crate) fn on_drag(
@@ -109,8 +116,18 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let neg_offset = -HANDLE_PADDING;
+        let neg_offset = -(HANDLE_PADDING + self.gap / 2.);
         let axis = self.axis;
+        let hitbox_selector = if axis.is_horizontal() {
+            "resizable-horizontal-handle-hitbox"
+        } else {
+            "resizable-vertical-handle-hitbox"
+        };
+        let indicator_selector = if axis.is_horizontal() {
+            "resizable-horizontal-handle-indicator"
+        } else {
+            "resizable-vertical-handle-indicator"
+        };
 
         window.with_element_state(id.unwrap(), |state, window| {
             let state = state.unwrap_or(ResizeHandleState::default());
@@ -123,6 +140,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
 
             let mut el = div()
                 .id(self.id.clone())
+                .debug_selector(|| hitbox_selector.to_string())
                 .occlude()
                 .absolute()
                 .flex_shrink_0()
@@ -164,6 +182,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                 })
                 .child(
                     div()
+                        .debug_selector(|| indicator_selector.to_string())
                         .bg(bg_color)
                         .group_hover("handle", |this| this.bg(bg_color))
                         .when(axis.is_horizontal(), |this| this.h_full().w(HANDLE_SIZE))

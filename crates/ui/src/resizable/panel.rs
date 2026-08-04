@@ -6,7 +6,7 @@ use std::{
 use gpui::{
     Along, AnyElement, App, AppContext, Axis, Bounds, Context, Element, ElementId, Empty, Entity,
     EventEmitter, InteractiveElement as _, IntoElement, IsZero as _, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div,
+    ParentElement, Pixels, Point, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder, px,
 };
 
@@ -15,6 +15,19 @@ use crate::{
 };
 
 use super::{ResizableState, resizable_panel, resize_handle};
+
+pub(super) fn panel_size_for_pointer(
+    axis: Axis,
+    pointer: Point<Pixels>,
+    panel_bounds: &Bounds<Pixels>,
+    gap: Pixels,
+) -> Pixels {
+    let gap_offset = gap.max(px(0.)) / 2.;
+    match axis {
+        Axis::Horizontal => pointer.x - panel_bounds.left() - gap_offset,
+        Axis::Vertical => pointer.y - panel_bounds.top() - gap_offset,
+    }
+}
 
 pub enum ResizablePanelEvent {
     Resized,
@@ -164,6 +177,7 @@ impl RenderOnce for ResizablePanelGroup {
                     .map(|(ix, mut panel)| {
                         panel.panel_ix = ix;
                         panel.axis = self.axis;
+                        panel.gap = self.gap;
                         panel.state = Some(state.clone());
                         panel
                     }),
@@ -217,10 +231,11 @@ impl RenderOnce for ResizablePanelGroup {
 /// - `.flex_basis(...)` — driven by `ResizableState`, not by the caller.
 /// - `.absolute()` — would remove the panel from the resizable's flex flow.
 /// - `.overflow_hidden()` — may clip the resize handle, which is positioned
-///   absolute at `left: -4px` of each panel after the first.
+///   across the leading edge or the center of a configured group gap.
 #[derive(IntoElement)]
 pub struct ResizablePanel {
     axis: Axis,
+    gap: Pixels,
     panel_ix: usize,
     state: Option<Entity<ResizableState>>,
     /// Initial size is the size that the panel has when it is created.
@@ -241,6 +256,7 @@ impl ResizablePanel {
             state: None,
             size_range: (PANEL_MIN_SIZE..Pixels::MAX),
             axis: Axis::Horizontal,
+            gap: px(0.),
             children: vec![],
             visible: true,
             style: StyleRefinement::default(),
@@ -347,6 +363,7 @@ impl RenderOnce for ResizablePanel {
                 let reset_state = state.clone();
                 this.child(
                     resize_handle(("resizable-handle", ix), self.axis)
+                        .gap(self.gap)
                         .on_drag(DragPanel, move |drag_panel, _, _, cx| {
                             cx.stop_propagation();
                             // Set current resizing panel ix
@@ -435,21 +452,8 @@ impl Element for ResizePanelGroupElement {
 
                 state.update(cx, |state, cx| {
                     let panel = state.panels.get(ix).expect("BUG: invalid panel index");
-
-                    match axis {
-                        Axis::Horizontal => state.resize_panel_at_handle(
-                            ix,
-                            e.position.x - panel.bounds.left(),
-                            window,
-                            cx,
-                        ),
-                        Axis::Vertical => state.resize_panel_at_handle(
-                            ix,
-                            e.position.y - panel.bounds.top(),
-                            window,
-                            cx,
-                        ),
-                    }
+                    let size = panel_size_for_pointer(axis, e.position, &panel.bounds, state.gap);
+                    state.resize_panel_at_handle(ix, size, window, cx);
                     cx.notify();
                 })
             }

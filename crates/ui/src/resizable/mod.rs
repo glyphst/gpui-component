@@ -400,10 +400,15 @@ mod tests {
     use super::*;
     use gpui::{
         AppContext as _, Context, InteractiveElement as _, ParentElement as _, Render, Styled as _,
-        TestAppContext, VisualTestContext, Window, div, size,
+        TestAppContext, VisualTestContext, Window, div, point, size,
     };
 
     struct GappedPanelHost;
+
+    struct HandleHost {
+        axis: Axis,
+        gap: Pixels,
+    }
 
     impl Render for GappedPanelHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
@@ -415,6 +420,28 @@ mod tests {
                             div()
                                 .size_full()
                                 .debug_selector(move || format!("gapped-panel-{ix}")),
+                        )
+                    })),
+            )
+        }
+    }
+
+    impl Render for HandleHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            let along = px(200.) + self.gap;
+            let (width, height) = match self.axis {
+                Axis::Horizontal => (along, px(100.)),
+                Axis::Vertical => (px(100.), along),
+            };
+            div().w(width).h(height).child(
+                ResizablePanelGroup::new("handle-panels")
+                    .axis(self.axis)
+                    .gap(self.gap)
+                    .children((0..2).map(|ix| {
+                        resizable_panel().child(
+                            div()
+                                .size_full()
+                                .debug_selector(move || format!("handle-panel-{ix}")),
                         )
                     })),
             )
@@ -514,6 +541,101 @@ mod tests {
         assert_eq!(second.left() - first.right(), px(4.));
         assert_eq!(third.left() - second.right(), px(4.));
         assert_eq!(third.right() - first.left(), px(308.));
+    }
+
+    #[gpui::test]
+    fn horizontal_handle_is_centered_in_the_gap_and_maps_pointer_without_a_jump(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| HandleHost {
+            axis: Axis::Horizontal,
+            gap: px(4.),
+        });
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let first = cx.debug_bounds("handle-panel-0").unwrap();
+        let second = cx.debug_bounds("handle-panel-1").unwrap();
+        let indicator = cx
+            .debug_bounds("resizable-horizontal-handle-indicator")
+            .unwrap();
+        let hitbox = cx
+            .debug_bounds("resizable-horizontal-handle-hitbox")
+            .unwrap();
+        let gutter_midpoint = point(
+            first.right() + (second.left() - first.right()) / 2.,
+            first.center().y,
+        );
+
+        assert_eq!(second.left() - first.right(), px(4.));
+        assert_eq!(indicator.left(), gutter_midpoint.x);
+        assert!(indicator.left() >= first.right());
+        assert!(indicator.right() <= second.left());
+        assert!(hitbox.contains(&gutter_midpoint));
+        assert_eq!(
+            panel_size_for_pointer(Axis::Horizontal, gutter_midpoint, &first, px(4.)),
+            first.size.width
+        );
+    }
+
+    #[gpui::test]
+    fn vertical_handle_is_centered_in_the_gap(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| HandleHost {
+            axis: Axis::Vertical,
+            gap: px(4.),
+        });
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let first = cx.debug_bounds("handle-panel-0").unwrap();
+        let second = cx.debug_bounds("handle-panel-1").unwrap();
+        let indicator = cx
+            .debug_bounds("resizable-vertical-handle-indicator")
+            .unwrap();
+        let hitbox = cx.debug_bounds("resizable-vertical-handle-hitbox").unwrap();
+        let gutter_midpoint = point(
+            first.center().x,
+            first.bottom() + (second.top() - first.bottom()) / 2.,
+        );
+
+        assert_eq!(second.top() - first.bottom(), px(4.));
+        assert_eq!(indicator.top(), gutter_midpoint.y);
+        assert!(indicator.top() >= first.bottom());
+        assert!(indicator.bottom() <= second.top());
+        assert!(hitbox.contains(&gutter_midpoint));
+        assert_eq!(
+            panel_size_for_pointer(Axis::Vertical, gutter_midpoint, &first, px(4.)),
+            first.size.height
+        );
+    }
+
+    #[gpui::test]
+    fn zero_gap_handle_keeps_its_leading_edge_position(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| HandleHost {
+            axis: Axis::Horizontal,
+            gap: px(0.),
+        });
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let first = cx.debug_bounds("handle-panel-0").unwrap();
+        let second = cx.debug_bounds("handle-panel-1").unwrap();
+        let indicator = cx
+            .debug_bounds("resizable-horizontal-handle-indicator")
+            .unwrap();
+        let hitbox = cx
+            .debug_bounds("resizable-horizontal-handle-hitbox")
+            .unwrap();
+        let boundary = point(second.left(), first.center().y);
+        assert_eq!(indicator.left(), second.left());
+        assert!(hitbox.contains(&boundary));
+        assert_eq!(
+            panel_size_for_pointer(Axis::Horizontal, boundary, &first, px(0.)),
+            first.size.width
+        );
     }
 
     #[gpui::test]
