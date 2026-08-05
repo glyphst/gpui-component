@@ -100,6 +100,7 @@ struct SelectOptions {
     search_placeholder: Option<SharedString>,
     menu_width: Length,
     menu_max_h: Length,
+    menu_priority: usize,
     disabled: bool,
     appearance: bool,
 }
@@ -115,6 +116,7 @@ impl Default for SelectOptions {
             title_prefix: None,
             menu_width: Length::Auto,
             menu_max_h: rems(20.).into(),
+            menu_priority: 1,
             disabled: false,
             appearance: true,
             search_placeholder: None,
@@ -135,6 +137,7 @@ where
     searchable: bool,
     icon: Option<Icon>,
     title_prefix: Option<SharedString>,
+    menu_priority: usize,
 }
 
 /// A Select element.
@@ -272,6 +275,7 @@ where
             searchable: false,
             icon: None,
             title_prefix: None,
+            menu_priority: 1,
         }
     }
 
@@ -609,7 +613,7 @@ where
                                 })),
                         ),
                     )
-                    .with_priority(1),
+                    .with_priority(self.menu_priority),
                 )
             })
     }
@@ -638,6 +642,14 @@ where
     /// Set the max height of the dropdown menu, default: 20rem.
     pub fn menu_max_h(mut self, max_h: impl Into<Length>) -> Self {
         self.options.menu_max_h = max_h.into();
+        self
+    }
+
+    /// Set the deferred rendering priority of the dropdown menu.
+    ///
+    /// The default is `1`, preserving the standard application overlay order.
+    pub fn menu_priority(mut self, priority: usize) -> Self {
+        self.options.menu_priority = priority;
         self
     }
 
@@ -765,6 +777,7 @@ where
             this.state.search_placeholder = opts.search_placeholder;
             this.state.menu_width = opts.menu_width;
             this.state.menu_max_h = opts.menu_max_h;
+            this.menu_priority = opts.menu_priority;
             this.state.disabled = opts.disabled;
             this.state.appearance = opts.appearance;
             this.icon = opts.icon;
@@ -799,7 +812,7 @@ mod tests {
     use crate::{
         IndexPath,
         searchable_list::SearchableVec,
-        select::{SelectGroup, SelectState},
+        select::{Select, SelectGroup, SelectState},
     };
 
     #[gpui::test]
@@ -833,6 +846,20 @@ mod tests {
 
             assert_eq!(state.read(cx).selected_index(cx), Some(initial));
             assert_eq!(state.read(cx).selected_value(), Some(&"Blueberry"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_select_menu_priority_is_configurable(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let items = SearchableVec::new(vec!["Rust", "Go"]);
+            let state = cx.new(|cx| SelectState::new(items, None, window, cx));
+            let select = Select::new(&state).menu_priority(7);
+
+            assert_eq!(select.options.menu_priority, 7);
+            assert_eq!(super::SelectOptions::default().menu_priority, 1);
         });
     }
 }
