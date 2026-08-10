@@ -49,6 +49,7 @@ pub(super) enum InlineFlowItem {
     },
     Custom {
         node: MarkdownNode,
+        highlights: Vec<HighlightStyle>,
     },
 }
 
@@ -215,7 +216,12 @@ impl Element for InlineFlow {
             .items
             .iter()
             .map(|item| match item {
-                InlineFlowItem::Custom { node } => {
+                InlineFlowItem::Custom { node, highlights } => {
+                    let text_style = highlights
+                        .iter()
+                        .fold(text_style.clone(), |style, highlight| {
+                            style.highlight(*highlight)
+                        });
                     let mut element = self
                         .markdown_extensions
                         .render_inline(node, &text_style, window, cx)

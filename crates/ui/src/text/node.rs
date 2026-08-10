@@ -23,6 +23,7 @@ use crate::{
         CodeBlockActionsFn, LinkClickHandlerFn, MarkdownExtensions, MarkdownNode,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
+        inline_flex::InlineFlex,
         inline_flow::{InlineFlow, InlineFlowItem},
         text_view::handle_link_click,
     },
@@ -1323,10 +1324,68 @@ impl PartialEq for NodeContext {
     }
 }
 
+fn highlight_for_mark(
+    mark: &TextMark,
+    node_cx: &NodeContext,
+    cx: &mut App,
+) -> (HighlightStyle, Option<LinkMark>) {
+    let mut highlight = HighlightStyle::default();
+    if mark.bold {
+        highlight.font_weight = Some(FontWeight::BOLD);
+    }
+    if mark.italic {
+        highlight.font_style = Some(FontStyle::Italic);
+    }
+    if mark.strikethrough {
+        highlight.strikethrough = Some(gpui::StrikethroughStyle {
+            thickness: gpui::px(1.),
+            ..Default::default()
+        });
+    }
+    if mark.underline {
+        highlight.underline = Some(gpui::UnderlineStyle {
+            thickness: gpui::px(1.),
+            ..Default::default()
+        });
+    }
+    if mark.code {
+        highlight = highlight.highlight(node_cx.style.inline_code_highlight(cx));
+    }
+    if let Some(color) = mark.highlight {
+        highlight.background_color = Some(color);
+    }
+
+    let link = mark.link.clone().map(|mut link| {
+        highlight.color = Some(cx.theme().link);
+        highlight.underline = Some(gpui::UnderlineStyle {
+            thickness: gpui::px(1.),
+            ..Default::default()
+        });
+        if let Some(identifier) = link.identifier.as_ref()
+            && let Some(resolved) = node_cx.link_refs.get(identifier)
+        {
+            link = resolved.clone();
+        }
+        link
+    });
+
+    (highlight, link)
+}
+
 impl Paragraph {
     fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
         let span = self.span;
         let children = &self.children;
+
+        if self.has_custom_inline() {
+            return InlineFlex::new(
+                span.unwrap_or_default(),
+                self.inline_flow_items(node_cx, cx),
+                node_cx.link_click_handler.clone(),
+                node_cx.markdown_extensions.clone(),
+            )
+            .into_any_element();
+        }
 
         if self.should_render_inline_flow() {
             return InlineFlow::new(
@@ -1494,9 +1553,12 @@ impl Paragraph {
 
     fn should_render_inline_flow(&self) -> bool {
         let has_image = self.children.iter().any(|child| child.image.is_some());
-        let has_custom = self.children.iter().any(|child| child.custom.is_some());
         let has_text = self.children.iter().any(|child| !child.text.is_empty());
-        has_custom || (has_image && has_text)
+        has_image && has_text
+    }
+
+    fn has_custom_inline(&self) -> bool {
+        self.children.iter().any(|child| child.custom.is_some())
     }
 
     fn inline_flow_items(&self, node_cx: &NodeContext, cx: &mut App) -> Vec<InlineFlowItem> {
@@ -1531,6 +1593,11 @@ impl Paragraph {
                 } else if let Some(custom) = &inline_node.custom {
                     items.push(InlineFlowItem::Custom {
                         node: custom.clone(),
+                        highlights: inline_node
+                            .marks
+                            .iter()
+                            .map(|(_, mark)| highlight_for_mark(mark, node_cx, cx).0)
+                            .collect(),
                     });
                 }
 
@@ -1545,45 +1612,8 @@ impl Paragraph {
                 for (range, style) in &inline_node.marks {
                     let inner_range = (offset + range.start)..(offset + range.end);
 
-                    let mut highlight = HighlightStyle::default();
-                    if style.bold {
-                        highlight.font_weight = Some(FontWeight::BOLD);
-                    }
-                    if style.italic {
-                        highlight.font_style = Some(FontStyle::Italic);
-                    }
-                    if style.strikethrough {
-                        highlight.strikethrough = Some(gpui::StrikethroughStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.underline {
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.code {
-                        highlight = highlight.highlight(node_cx.style.inline_code_highlight(cx));
-                    }
-                    if let Some(color) = style.highlight {
-                        highlight.background_color = Some(color);
-                    }
-
-                    if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(cx.theme().link);
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-
-                        if let Some(identifier) = link_mark.identifier.as_ref()
-                            && let Some(mark) = node_cx.link_refs.get(identifier)
-                        {
-                            link_mark = mark.clone();
-                        }
-
+                    let (highlight, link_mark) = highlight_for_mark(style, node_cx, cx);
+                    if let Some(link_mark) = link_mark {
                         links.push((inner_range.clone(), link_mark));
                     }
 
