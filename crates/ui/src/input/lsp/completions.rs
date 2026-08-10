@@ -33,7 +33,11 @@ pub enum CompletionTriggerEvent<'a> {
 pub struct CompletionMenuOptions {
     /// The preferred minimum width, clamped to the viewport.
     pub min_width: Pixels,
-    /// The maximum width for both the menu and its documentation panel.
+    /// Maximum width of the popover.
+    ///
+    /// Defaults to 320 px, which is fine for most identifiers but can
+    /// truncate longer labels. Widen this when hosting an editor that
+    /// surfaces long completion labels.
     pub max_width: Pixels,
 }
 

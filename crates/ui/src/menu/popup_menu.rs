@@ -1034,20 +1034,26 @@ impl PopupMenu {
         }
     }
 
+    /// Dismiss the menu and the entire parent chain.
+    ///
+    /// The submenu is closed together with its parent, same as macOS menus.
     fn dismiss(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_submenu().is_some() {
-            return;
-        }
-
+        self.selected_index = None;
         cx.emit(DismissEvent);
 
-        // Focus back to the previous focused handle.
-        if let Some(handle) = self
-            .previous_focus_handle
-            .as_ref()
-            .or(self.action_context.as_ref())
-        {
-            window.focus(handle, cx);
+        // Focus back to the previous focused handle, unless the item's click
+        // handler has already moved focus elsewhere (e.g. opened a dialog and
+        // focused its input) -- stealing focus back would break that.
+        let focus_moved_away =
+            window.focused(cx).is_some() && !self.focus_handle.contains_focused(window, cx);
+        if !focus_moved_away {
+            if let Some(handle) = self
+                .previous_focus_handle
+                .as_ref()
+                .or(self.action_context.as_ref())
+            {
+                window.focus(handle, cx);
+            }
         }
 
         let Some(parent_menu) = self.parent_menu.clone() else {
@@ -1056,7 +1062,6 @@ impl PopupMenu {
 
         // Dismiss parent menu, when this menu is dismissed
         _ = parent_menu.update(cx, |view, cx| {
-            view.selected_index = None;
             view.dismiss(&Cancel, window, cx);
         });
     }
@@ -1074,6 +1079,14 @@ impl PopupMenu {
                     return;
                 }
             }
+        }
+
+        // Do not dismiss, if there have an active submenu, the click may be
+        // inside the submenu, let the submenu to handle it.
+        //
+        // Otherwise the submenu will be dismissed before its item's `on_click`.
+        if self.active_submenu().is_some() {
+            return;
         }
 
         self.dismiss(&Cancel, window, cx);
