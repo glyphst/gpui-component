@@ -6,15 +6,19 @@ use std::{
 };
 
 use gpui::{
-    App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId, GlobalElementId, Half,
-    ClickEvent, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
+    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
+    Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     SharedString, StyledText, TextLayout, Window, point, px, quad,
 };
 
 use crate::{
-    ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
-    text::TextViewContextMenuRequest, text::TextViewMultiClickKind, text::node::LinkMark,
+    ActiveTheme, WindowExt as _,
+    global_state::GlobalState,
+    input::Selection,
+    text::TextViewContextMenuRequest,
+    text::TextViewMultiClickKind,
+    text::node::LinkMark,
     text::selection::word_range_at,
     text::text_view::{LinkClickHandlerFn, handle_link_click},
 };
@@ -557,10 +561,7 @@ impl Element for Inline {
                 let link_click_handler = self.link_click_handler.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.bubble()
-                        || event.button != MouseButton::Left
-                        || !hitbox.is_hovered(window)
-                    {
+                    if !phase.bubble() || !hitbox.is_hovered(window) {
                         return;
                     }
                     if text_view_state
@@ -585,13 +586,7 @@ impl Element for Inline {
                             },
                             up: event.clone(),
                         });
-                        handle_link_click(
-                            &link_click_handler,
-                            link.url,
-                            click,
-                            window,
-                            cx,
-                        );
+                        handle_link_click(&link_click_handler, link.url, click, window, cx);
                     }
                 }
             });

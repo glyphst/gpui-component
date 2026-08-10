@@ -2,9 +2,9 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior,
-    ClickEvent, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
-    ParentElement, Pixels, Point, SharedString, StyleRefinement, Styled, Window, div,
+    AnyElement, App, Bounds, ClickEvent, Element, ElementId, Entity, GlobalElementId, Hitbox,
+    HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
+    ParentElement, Pixels, Point, SharedString, StyleRefinement, Styled, TextStyle, Window, div,
 };
 
 use crate::StyledExt;
@@ -43,12 +43,7 @@ pub(crate) fn handle_link_click(
     cx: &mut App,
 ) {
     if let Some(handler) = handler {
-        handler(
-            &url,
-            &event,
-            window,
-            cx,
-        );
+        handler(&url, &event, window, cx);
     } else if match &event {
         ClickEvent::Mouse(click) => {
             matches!(click.up.button, MouseButton::Left | MouseButton::Middle)
@@ -267,6 +262,13 @@ impl TextView {
         self
     }
 
+    /// Enable `$...$` and `$$...$$` Markdown math parsing.
+    pub fn markdown_math(mut self) -> Self {
+        let extensions = Arc::make_mut(&mut self.markdown_extensions);
+        *extensions = extensions.clone().math();
+        self
+    }
+
     /// Register a custom block-level Markdown parser.
     ///
     /// The parser runs during Markdown AST conversion and must be independent
@@ -297,6 +299,35 @@ impl TextView {
         E: IntoElement,
     {
         Arc::make_mut(&mut self.markdown_extensions).push_block_renderer(name, renderer);
+        self
+    }
+
+    /// Register a custom parser for Markdown phrasing nodes.
+    pub fn markdown_inline_parser<F>(mut self, parser: F) -> Self
+    where
+        F: for<'a> Fn(
+                &markdown::mdast::Node,
+                &crate::text::MarkdownParseContext<'a>,
+            ) -> Option<MarkdownNode>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::make_mut(&mut self.markdown_extensions).push_inline_parser(parser);
+        self
+    }
+
+    /// Register a renderer for a custom Markdown phrasing node name.
+    pub fn markdown_inline_renderer<F, E>(
+        mut self,
+        name: impl Into<SharedString>,
+        renderer: F,
+    ) -> Self
+    where
+        F: Fn(&MarkdownNode, &TextStyle, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        Arc::make_mut(&mut self.markdown_extensions).push_inline_renderer(name, renderer);
         self
     }
 
@@ -580,6 +611,59 @@ mod tests {
         assert!(
             inline_bounds[1].left() - inline_bounds[0].right() < px(40.),
             "unloaded inline image fallback should stay generic and compact"
+        );
+    }
+
+    #[gpui::test]
+    fn inline_plugin_receives_inherited_heading_style(cx: &mut TestAppContext) {
+        struct InlinePluginRoot;
+
+        impl Render for InlinePluginRoot {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                TextView::markdown("inline-plugin-style", "# Heading $H$\n\nBody $B$ tail")
+                    .markdown_math()
+                    .markdown_inline_parser(|node, cx| {
+                        let markdown::mdast::Node::InlineMath(math) = node else {
+                            return None;
+                        };
+                        Some(
+                            crate::text::MarkdownNode::new("math-test", math.value.clone())
+                                .text(math.value.clone())
+                                .markdown(cx.node_source(node).unwrap_or_default()),
+                        )
+                    })
+                    .markdown_inline_renderer("math-test", |node, text_style, _, _| {
+                        let selector = if node.as_text() == "H" {
+                            "heading-inline-plugin"
+                        } else {
+                            "body-inline-plugin"
+                        };
+                        div()
+                            .debug_selector(move || selector.into())
+                            .flex_none()
+                            .text_size(text_style.font_size)
+                            .child(node.as_text().to_string())
+                    })
+            }
+        }
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| InlinePluginRoot);
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let heading = cx.debug_bounds("heading-inline-plugin").unwrap();
+        let body = cx.debug_bounds("body-inline-plugin").unwrap();
+        assert!(
+            heading.size.height > body.size.height,
+            "heading inline renderer should inherit the larger heading text size"
         );
     }
 

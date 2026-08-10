@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, IntoElement, SharedString, TextStyle, Window};
 use markdown::{ParseOptions, mdast};
 
 use crate::text::node::Span;
@@ -30,12 +30,22 @@ pub type MarkdownBlockParserFn =
 pub type MarkdownBlockRenderFn =
     dyn Fn(&MarkdownNode, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+/// Type for a custom Markdown phrasing-node parser.
+pub type MarkdownInlineParserFn =
+    dyn for<'a> Fn(&mdast::Node, &MarkdownParseContext<'a>) -> Option<MarkdownNode> + Send + Sync;
+
+/// Type for a custom Markdown phrasing-node renderer.
+///
+/// The inherited [`TextStyle`] is the style active at the node's actual layout
+/// position, including heading sizes and surrounding text color.
+pub type MarkdownInlineRenderFn =
+    dyn Fn(&MarkdownNode, &TextStyle, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
 /// A reusable Markdown extension that parses and renders one custom node.
 pub trait MarkdownPlugin: Send + Sync + 'static {
     /// Whether this plugin produces block-level nodes.
     ///
-    /// Plugins are inline by default. TextView does not support inline custom
-    /// Markdown rendering yet, so block plugins should return `true`.
+    /// Plugins are inline by default. Block plugins should return `true`.
     fn is_block(&self) -> bool {
         false
     }
@@ -48,6 +58,20 @@ pub trait MarkdownPlugin: Send + Sync + 'static {
 
     /// Render a custom Markdown node produced by this plugin.
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement;
+
+    /// Render an inline custom Markdown node with its inherited text style.
+    ///
+    /// Plugins that do not need inherited styling can rely on this default,
+    /// which delegates to [`Self::render`].
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        _text_style: &TextStyle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.render(node, window, cx).into_any_element()
+    }
 }
 
 /// Context passed to custom Markdown parsers.
@@ -86,7 +110,18 @@ pub struct MarkdownNode {
     text: SharedString,
     markdown: SharedString,
     data: Arc<dyn Any + Send + Sync>,
+    layout: MarkdownNodeLayout,
     pub(crate) span: Option<Span>,
+}
+
+/// Layout requested by a custom Markdown phrasing node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MarkdownNodeLayout {
+    /// Participate in the paragraph's inline wrapping flow.
+    #[default]
+    Inline,
+    /// Occupy the full document width when it is the paragraph's sole child.
+    FullWidth,
 }
 
 impl MarkdownNode {
@@ -100,6 +135,7 @@ impl MarkdownNode {
             text: SharedString::default(),
             markdown: SharedString::default(),
             data: Arc::new(data),
+            layout: MarkdownNodeLayout::Inline,
             span: None,
         }
     }
@@ -131,6 +167,13 @@ impl MarkdownNode {
         self
     }
 
+    /// Request full-width layout when this phrasing node is the paragraph's
+    /// sole child.
+    pub fn full_width(mut self) -> Self {
+        self.layout = MarkdownNodeLayout::FullWidth;
+        self
+    }
+
     /// Read typed data.
     pub fn data<T>(&self) -> Option<&T>
     where
@@ -141,6 +184,10 @@ impl MarkdownNode {
 
     pub(crate) fn set_span(&mut self, span: Option<Span>) {
         self.span = span;
+    }
+
+    pub(crate) fn layout(&self) -> MarkdownNodeLayout {
+        self.layout
     }
 
     pub(crate) fn to_markdown(&self) -> String {
@@ -158,6 +205,7 @@ impl fmt::Debug for MarkdownNode {
             .field("name", &self.name)
             .field("text", &self.text)
             .field("markdown", &self.markdown)
+            .field("layout", &self.layout)
             .field("span", &self.span)
             .finish_non_exhaustive()
     }
@@ -168,6 +216,7 @@ impl PartialEq for MarkdownNode {
         self.name == other.name
             && self.text == other.text
             && self.markdown == other.markdown
+            && self.layout == other.layout
             && self.span == other.span
     }
 }
@@ -176,8 +225,11 @@ impl PartialEq for MarkdownNode {
 #[derive(Clone, Default)]
 pub struct MarkdownExtensions {
     enable_mdx: bool,
+    enable_math: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
+    inline_parsers: Vec<Arc<MarkdownInlineParserFn>>,
+    inline_renderers: HashMap<SharedString, Arc<MarkdownInlineRenderFn>>,
     revision: u64,
 }
 
@@ -188,6 +240,13 @@ impl MarkdownExtensions {
     /// priority over MDX when both are enabled.
     pub fn mdx(mut self) -> Self {
         self.enable_mdx = true;
+        self.bump_revision();
+        self
+    }
+
+    /// Enable `$...$` and `$$...$$` parsing in `markdown-rs`.
+    pub fn math(mut self) -> Self {
+        self.enable_math = true;
         self.bump_revision();
         self
     }
@@ -214,6 +273,28 @@ impl MarkdownExtensions {
         self
     }
 
+    /// Register a parser for Markdown phrasing nodes.
+    pub fn inline_parser<F>(mut self, parser: F) -> Self
+    where
+        F: for<'a> Fn(&mdast::Node, &MarkdownParseContext<'a>) -> Option<MarkdownNode>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.push_inline_parser(parser);
+        self
+    }
+
+    /// Register a renderer for a custom Markdown phrasing node name.
+    pub fn inline_renderer<F, E>(mut self, name: impl Into<SharedString>, renderer: F) -> Self
+    where
+        F: Fn(&MarkdownNode, &TextStyle, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.push_inline_renderer(name, renderer);
+        self
+    }
+
     /// Apply a reusable Markdown plugin.
     pub fn plugin<P>(self, plugin: P) -> Self
     where
@@ -231,7 +312,11 @@ impl MarkdownExtensions {
             });
             extensions
         } else {
-            panic!("inline Markdown plugins are not supported by TextView yet")
+            let mut extensions = self.inline_parser(move |node, cx| parser.parse(node, cx));
+            extensions.push_inline_renderer(name, move |node, text_style, window, cx| {
+                renderer.render_inline(node, text_style, window, cx)
+            });
+            extensions
         }
     }
 
@@ -262,6 +347,31 @@ impl MarkdownExtensions {
         self.bump_revision();
     }
 
+    pub(crate) fn push_inline_parser<F>(&mut self, parser: F)
+    where
+        F: for<'a> Fn(&mdast::Node, &MarkdownParseContext<'a>) -> Option<MarkdownNode>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.inline_parsers.push(Arc::new(parser));
+        self.bump_revision();
+    }
+
+    pub(crate) fn push_inline_renderer<F, E>(&mut self, name: impl Into<SharedString>, renderer: F)
+    where
+        F: Fn(&MarkdownNode, &TextStyle, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.inline_renderers.insert(
+            name.into(),
+            Arc::new(move |node, text_style, window, cx| {
+                renderer(node, text_style, window, cx).into_any_element()
+            }),
+        );
+        self.bump_revision();
+    }
+
     pub(crate) fn parse_options(&self) -> ParseOptions {
         let mut options = ParseOptions::gfm();
         if self.enable_mdx {
@@ -271,6 +381,10 @@ impl MarkdownExtensions {
             options.constructs.mdx_expression_text = true;
             options.constructs.mdx_jsx_flow = true;
             options.constructs.mdx_jsx_text = true;
+        }
+        if self.enable_math {
+            options.constructs.math_flow = true;
+            options.constructs.math_text = true;
         }
         options
     }
@@ -297,6 +411,31 @@ impl MarkdownExtensions {
         self.block_renderers
             .get(node.name())
             .map(|render| render(node, window, cx))
+    }
+
+    pub(crate) fn parse_inline(
+        &self,
+        node: &mdast::Node,
+        cx: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
+        for parser in &self.inline_parsers {
+            if let Some(node) = parser(node, cx) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        text_style: &TextStyle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        self.inline_renderers
+            .get(node.name())
+            .map(|render| render(node, text_style, window, cx))
     }
 
     fn bump_revision(&mut self) {

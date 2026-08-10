@@ -480,6 +480,7 @@ pub(crate) struct InlineNode {
     /// The text content.
     pub(crate) text: SharedString,
     pub(crate) image: Option<ImageNode>,
+    pub(crate) custom: Option<MarkdownNode>,
     /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
@@ -488,7 +489,10 @@ pub(crate) struct InlineNode {
 
 impl PartialEq for InlineNode {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.image == other.image && self.marks == other.marks
+        self.text == other.text
+            && self.image == other.image
+            && self.custom == other.custom
+            && self.marks == other.marks
     }
 }
 
@@ -599,6 +603,16 @@ fn image_markdown(image: &ImageNode) -> String {
         .clone()
         .map_or(String::new(), |title| format!(" \"{}\"", title));
     format!("![{}]({}{})", alt, image.url, title)
+}
+
+fn custom_markdown(child: &InlineNode, custom: &MarkdownNode) -> String {
+    let mut source = custom.to_markdown();
+    for (range, mark) in &child.marks {
+        if range.start == 0 && range.end >= child.text.len() {
+            source = wrap_with_mark(&source, mark);
+        }
+    }
+    source
 }
 
 /// Reconstruct the Markdown source for the `selection` sub-range of a text run
@@ -787,6 +801,7 @@ impl InlineNode {
         Self {
             text: text.into(),
             image: None,
+            custom: None,
             marks: vec![],
             state: Arc::new(Mutex::new(InlineState::default())),
         }
@@ -795,6 +810,13 @@ impl InlineNode {
     pub(crate) fn image(image: ImageNode) -> Self {
         let mut this = Self::new("");
         this.image = Some(image);
+        this
+    }
+
+    pub(crate) fn custom(custom: MarkdownNode) -> Self {
+        let text = custom.as_text().to_string();
+        let mut this = Self::new(text);
+        this.custom = Some(custom);
         this
     }
 
@@ -880,38 +902,44 @@ impl Paragraph {
     /// it.
     pub(super) fn selected_source(&self) -> String {
         let mut source = String::new();
-        let mut pending_images: Vec<String> = Vec::new();
+        let mut pending_embedded: Vec<String> = Vec::new();
         let mut run: Vec<(usize, &InlineNode)> = Vec::new();
         let mut offset = 0;
         let mut enters_image = true;
 
         for child in self.children.iter() {
-            let Some(image) = &child.image else {
+            let embedded_markdown = child.image.as_ref().map(image_markdown).or_else(|| {
+                child
+                    .custom
+                    .as_ref()
+                    .map(|custom| custom_markdown(child, custom))
+            });
+            let Some(embedded_markdown) = embedded_markdown else {
                 run.push((offset, child));
                 offset += child.text.len();
                 continue;
             };
 
-            // The run before an image is stored in that image's own state.
+            // The run before an embedded node is stored in that node's state.
             let run_before = !run.is_empty();
-            let selected = emit_run(&child.state, &run, &mut pending_images, &mut source);
+            let selected = emit_run(&child.state, &run, &mut pending_embedded, &mut source);
             if run_before {
                 enters_image = selected.emitted && selected.at_end;
             }
             if enters_image {
-                pending_images.push(image_markdown(image));
+                pending_embedded.push(embedded_markdown);
             } else {
-                pending_images.clear();
+                pending_embedded.clear();
             }
 
             run.clear();
             offset = 0;
         }
 
-        let trailing = emit_run(&self.state, &run, &mut pending_images, &mut source);
-        // Trailing images have no run after them to flush them.
+        let trailing = emit_run(&self.state, &run, &mut pending_embedded, &mut source);
+        // Trailing embedded nodes have no run after them to flush them.
         if !trailing.emitted && enters_image && !source.is_empty() {
-            source.push_str(&pending_images.join(""));
+            source.push_str(&pending_embedded.join(""));
         }
 
         source
@@ -1029,12 +1057,16 @@ impl Paragraph {
         self.children.push(InlineNode::image(image));
     }
 
+    pub(crate) fn push_custom(&mut self, custom: MarkdownNode) {
+        self.children.push(InlineNode::custom(custom));
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.children.is_empty()
             || self
                 .children
                 .iter()
-                .all(|node| node.text.is_empty() && node.image.is_none())
+                .all(|node| node.text.is_empty() && node.image.is_none() && node.custom.is_none())
     }
 
     /// Return length of children text.
@@ -1301,6 +1333,7 @@ impl Paragraph {
                 span.unwrap_or_default(),
                 self.inline_flow_items(node_cx, cx),
                 node_cx.link_click_handler.clone(),
+                node_cx.markdown_extensions.clone(),
             )
             .into_any_element();
         }
@@ -1461,8 +1494,9 @@ impl Paragraph {
 
     fn should_render_inline_flow(&self) -> bool {
         let has_image = self.children.iter().any(|child| child.image.is_some());
+        let has_custom = self.children.iter().any(|child| child.custom.is_some());
         let has_text = self.children.iter().any(|child| !child.text.is_empty());
-        has_image && has_text
+        has_custom || (has_image && has_text)
     }
 
     fn inline_flow_items(&self, node_cx: &NodeContext, cx: &mut App) -> Vec<InlineFlowItem> {
@@ -1473,10 +1507,7 @@ impl Paragraph {
         let mut offset = 0;
 
         for inline_node in &self.children {
-            let text_len = inline_node.text.len();
-            text.push_str(&inline_node.text);
-
-            if let Some(image) = &inline_node.image {
+            if inline_node.image.is_some() || inline_node.custom.is_some() {
                 if !text.is_empty() {
                     if let Ok(mut state) = inline_node.state.lock() {
                         state.set_text(text.clone().into());
@@ -1489,19 +1520,27 @@ impl Paragraph {
                     });
                 }
 
-                items.push(InlineFlowItem::Image {
-                    url: image.url.clone(),
-                    link: image.link.clone(),
-                    title: image.title(),
-                    width: image.width,
-                    height: image.height,
-                });
+                if let Some(image) = &inline_node.image {
+                    items.push(InlineFlowItem::Image {
+                        url: image.url.clone(),
+                        link: image.link.clone(),
+                        title: image.title(),
+                        width: image.width,
+                        height: image.height,
+                    });
+                } else if let Some(custom) = &inline_node.custom {
+                    items.push(InlineFlowItem::Custom {
+                        node: custom.clone(),
+                    });
+                }
 
                 text.clear();
                 links.clear();
                 highlights.clear();
                 offset = 0;
             } else {
+                let text_len = inline_node.text.len();
+                text.push_str(&inline_node.text);
                 let mut node_highlights = vec![];
                 for (range, style) in &inline_node.marks {
                     let inner_range = (offset + range.start)..(offset + range.end);
@@ -2328,10 +2367,16 @@ impl BlockNode {
                 .into_any_element(),
             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
             BlockNode::Custom(node) => {
-                let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
-                    Some(rendered) => rendered,
-                    None => div().child(node.as_text().to_string()).into_any_element(),
-                };
+                let text_style = window.text_style();
+                let inner = node_cx
+                    .markdown_extensions
+                    .render_block(node, window, cx)
+                    .or_else(|| {
+                        node_cx
+                            .markdown_extensions
+                            .render_inline(node, &text_style, window, cx)
+                    })
+                    .unwrap_or_else(|| div().child(node.as_text().to_string()).into_any_element());
 
                 div().pb(mb).child(inner).into_any_element()
             }
@@ -2465,6 +2510,14 @@ mod tests {
         set_paragraph_selection(&paragraph, 0..11);
         assert_eq!(paragraph.selected_source(), "plain words");
         assert_eq!(paragraph.selected_text(), "plain words");
+    }
+
+    #[test]
+    fn custom_markdown_keeps_surrounding_marks() {
+        let child = InlineNode::custom(MarkdownNode::new("math", ()).text("x").markdown("$x$"))
+            .marks(vec![(0..1, TextMark::default().bold().italic())]);
+        let source = custom_markdown(&child, child.custom.as_ref().unwrap());
+        assert_eq!(source, "***$x$***");
     }
 
     fn selected_paragraph(text: &str) -> Paragraph {

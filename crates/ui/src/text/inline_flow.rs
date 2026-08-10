@@ -5,11 +5,10 @@ use std::{
 
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Element, ElementId,
-    GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _,
-    IntoElement, LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine,
-    SharedString, SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _,
-    TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative,
-    size,
+    GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _, IntoElement,
+    LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine, SharedString,
+    SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun, TextStyle,
+    WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::{
@@ -20,15 +19,18 @@ use crate::{
 
 use super::{
     inline::{Inline, InlineState},
+    markdown_ext::{MarkdownExtensions, MarkdownNode},
     node::LinkMark,
 };
 
 const IMAGE_LEN: usize = 1;
+const CUSTOM_LEN: usize = 1;
 
 pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    markdown_extensions: Arc<MarkdownExtensions>,
 }
 
 pub(super) enum InlineFlowItem {
@@ -45,11 +47,15 @@ pub(super) enum InlineFlowItem {
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
     },
+    Custom {
+        node: MarkdownNode,
+    },
 }
 
 #[derive(Default)]
 pub(crate) struct InlineFlowLayoutState {
     layout: Arc<Mutex<Option<InlineFlowLayout>>>,
+    custom_elements: Vec<Option<AnyElement>>,
 }
 
 #[derive(Default)]
@@ -74,6 +80,11 @@ enum PositionedFragment {
         origin: gpui::Point<Pixels>,
         size: Size<Pixels>,
     },
+    Custom {
+        item_ix: usize,
+        origin: gpui::Point<Pixels>,
+        size: Size<Pixels>,
+    },
 }
 
 enum MeasureItem {
@@ -86,6 +97,9 @@ enum MeasureItem {
         url: SharedUri,
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
+    },
+    Custom {
+        size: Size<Pixels>,
     },
 }
 
@@ -103,6 +117,7 @@ enum LineFragmentKind {
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image,
+    Custom,
 }
 
 impl InlineFlow {
@@ -110,11 +125,13 @@ impl InlineFlow {
         id: impl Into<ElementId>,
         items: Vec<InlineFlowItem>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        markdown_extensions: Arc<MarkdownExtensions>,
     ) -> Self {
         Self {
             id: id.into(),
             items,
             link_click_handler,
+            markdown_extensions,
         }
     }
 
@@ -192,7 +209,29 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let measure_items = self.items.iter().map(MeasureItem::from).collect::<Vec<_>>();
+        let text_style = window.text_style();
+        let mut custom_elements = Vec::with_capacity(self.items.len());
+        let measure_items = self
+            .items
+            .iter()
+            .map(|item| match item {
+                InlineFlowItem::Custom { node } => {
+                    let mut element = self
+                        .markdown_extensions
+                        .render_inline(node, &text_style, window, cx)
+                        .unwrap_or_else(|| {
+                            SharedString::from(node.as_text().to_string()).into_any_element()
+                        });
+                    let size = element.layout_as_root(AvailableSpace::min_size(), window, cx);
+                    custom_elements.push(Some(element));
+                    MeasureItem::Custom { size }
+                }
+                _ => {
+                    custom_elements.push(None);
+                    MeasureItem::from(item)
+                }
+            })
+            .collect::<Vec<_>>();
         let line_height = window.line_height();
         let rem_size = window.rem_size();
         let image_sizes = measure_items
@@ -210,9 +249,13 @@ impl Element for InlineFlow {
                     cx,
                 )),
                 MeasureItem::Text { .. } => None,
+                MeasureItem::Custom { .. } => None,
             })
             .collect::<Vec<_>>();
-        let layout_state = InlineFlowLayoutState::default();
+        let layout_state = InlineFlowLayoutState {
+            layout: Arc::default(),
+            custom_elements,
+        };
         let layout_ref = layout_state.layout.clone();
 
         let layout_id = window.request_measured_layout(Default::default(), {
@@ -334,6 +377,29 @@ impl Element for InlineFlow {
                     );
                     elements.push(element);
                 }
+                PositionedFragment::Custom {
+                    item_ix,
+                    origin,
+                    size: fragment_size,
+                } => {
+                    let Some(mut element) = request_layout
+                        .custom_elements
+                        .get_mut(item_ix)
+                        .and_then(Option::take)
+                    else {
+                        continue;
+                    };
+                    element.prepaint_as_root(
+                        bounds.origin + origin,
+                        size(
+                            AvailableSpace::Definite(fragment_size.width),
+                            AvailableSpace::Definite(fragment_size.height),
+                        ),
+                        window,
+                        cx,
+                    );
+                    elements.push(element);
+                }
             }
         }
 
@@ -377,6 +443,9 @@ impl From<&InlineFlowItem> for MeasureItem {
                 width: *width,
                 height: *height,
             },
+            InlineFlowItem::Custom { .. } => {
+                unreachable!("custom inline nodes are measured with their rendered element")
+            }
         }
     }
 }
@@ -386,6 +455,7 @@ impl MeasureItem {
         match self {
             MeasureItem::Text { text, .. } => text.len(),
             MeasureItem::Image { .. } => IMAGE_LEN,
+            MeasureItem::Custom { .. } => CUSTOM_LEN,
         }
     }
 }
@@ -473,6 +543,18 @@ fn layout_flow(
                         });
                     }
                 }
+                MeasureItem::Custom { size } => {
+                    if line_range.start <= item_start && item_end <= line_range.end {
+                        line_width += size.width;
+                        actual_line_height = actual_line_height.max(size.height);
+                        line_fragments.push(LineFragmentLayout {
+                            item_ix,
+                            kind: LineFragmentKind::Custom,
+                            size: *size,
+                            source_range: 0..CUSTOM_LEN,
+                        });
+                    }
+                }
             }
 
             item_start = item_end;
@@ -496,6 +578,11 @@ fn layout_flow(
                     highlights,
                 },
                 LineFragmentKind::Image => PositionedFragment::Image {
+                    item_ix: fragment.item_ix,
+                    origin,
+                    size: fragment.size,
+                },
+                LineFragmentKind::Custom => PositionedFragment::Custom {
                     item_ix: fragment.item_ix,
                     origin,
                     size: fragment.size,
@@ -539,6 +626,7 @@ fn line_ranges(
                     .width,
                 IMAGE_LEN,
             ),
+            MeasureItem::Custom { size } => WrapLineFragment::element(size.width, CUSTOM_LEN),
         })
         .collect::<Vec<_>>();
     let font_size = text_style.font_size.to_pixels(rem_size);
