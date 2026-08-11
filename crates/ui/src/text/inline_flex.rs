@@ -146,14 +146,18 @@ impl Element for InlineFlex {
                         state.set_text(text.clone());
                     }
                     Some(
-                        Inline::new(
-                            ix,
-                            state.clone(),
-                            links.clone(),
-                            highlights.clone(),
-                            self.link_click_handler.clone(),
-                        )
-                        .into_any_element(),
+                        div()
+                            .min_w_0()
+                            .max_w_full()
+                            .flex_shrink_1()
+                            .child(Inline::new(
+                                ix,
+                                state.clone(),
+                                links.clone(),
+                                highlights.clone(),
+                                self.link_click_handler.clone(),
+                            ))
+                            .into_any_element(),
                     )
                 }
                 InlineFlowItem::Image { .. } => {

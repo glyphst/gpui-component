@@ -677,30 +677,38 @@ mod tests {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
-                div().w(px(390.)).child(
-                    TextView::markdown(
-                        "inline-math-layout",
-                        r#"This sentence uses `$` delimiters to show math inline: $\sqrt{3x-1}+(1+x)^2$ after."#,
-                    )
-                    .selectable(true)
-                    .markdown_math()
-                    .markdown_inline_parser(|node, cx| {
-                        let markdown::mdast::Node::InlineMath(math) = node else {
-                            return None;
-                        };
-                        Some(
-                            crate::text::MarkdownNode::new("math-layout-test", math.value.clone())
+                div()
+                    .debug_selector(|| "inline-math-layout-container".into())
+                    .w(px(350.))
+                    .px_2()
+                    .text_size(px(13.))
+                    .child(
+                        TextView::markdown(
+                            "inline-math-layout",
+                            r#"This sentence uses `$` delimiters to show math inline: $\sqrt{3x-1}+(1+x)^2$ after."#,
+                        )
+                        .selectable(true)
+                        .markdown_math()
+                        .markdown_inline_parser(|node, cx| {
+                            let markdown::mdast::Node::InlineMath(math) = node else {
+                                return None;
+                            };
+                            Some(
+                                crate::text::MarkdownNode::new(
+                                    "math-layout-test",
+                                    math.value.clone(),
+                                )
                                 .text(math.value.clone())
                                 .markdown(cx.node_source(node).unwrap_or_default()),
-                        )
-                    })
-                    .markdown_inline_renderer("math-layout-test", |_, _, _, _| {
-                        div()
-                            .debug_selector(|| "inline-math-layout-formula".into())
-                            .w(px(112.))
-                            .h(px(30.))
-                    }),
-                )
+                            )
+                        })
+                        .markdown_inline_renderer("math-layout-test", |_, _, _, _| {
+                            div()
+                                .debug_selector(|| "inline-math-layout-formula".into())
+                                .w(px(112.))
+                                .h(px(30.))
+                        }),
+                    )
             }
         }
 
@@ -715,6 +723,7 @@ mod tests {
             let _ = window.draw(cx);
         });
 
+        let container = cx.debug_bounds("inline-math-layout-container").unwrap();
         let formula = cx.debug_bounds("inline-math-layout-formula").unwrap();
         let text_bounds = cx.update(|window, cx| {
             crate::Root::read(window, cx)
@@ -728,13 +737,23 @@ mod tests {
             text_bounds.len() >= 2,
             "expected wrapped text on both sides"
         );
-        for text in text_bounds {
+        for text in &text_bounds {
+            assert!(
+                text.left() >= container.left() - px(0.5)
+                    && text.right() <= container.right() + px(0.5),
+                "selectable text escaped the padded Markdown container: container={container:?}, text={text:?}"
+            );
             let overlap = formula.intersect(&text).size;
             assert!(
                 overlap.width == px(0.) || overlap.height == px(0.),
                 "custom inline formula overlaps selectable text: formula={formula:?}, text={text:?}"
             );
         }
+        assert!(
+            formula.left() >= container.left() - px(0.5)
+                && formula.right() <= container.right() + px(0.5),
+            "custom inline formula escaped the padded Markdown container: container={container:?}, formula={formula:?}"
+        );
     }
 
     #[gpui::test]
