@@ -23,7 +23,6 @@ use crate::{
         CodeBlockActionsFn, LinkClickHandlerFn, MarkdownExtensions, MarkdownNode,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
-        inline_flex::InlineFlex,
         inline_flow::{InlineFlow, InlineFlowItem},
         text_view::handle_link_click,
     },
@@ -1377,17 +1376,7 @@ impl Paragraph {
         let span = self.span;
         let children = &self.children;
 
-        if self.has_custom_inline() {
-            return InlineFlex::new(
-                span.unwrap_or_default(),
-                self.inline_flow_items(node_cx, cx),
-                node_cx.link_click_handler.clone(),
-                node_cx.markdown_extensions.clone(),
-            )
-            .into_any_element();
-        }
-
-        if self.should_render_inline_flow() {
+        if self.has_custom_inline() || self.should_render_inline_flow() {
             return InlineFlow::new(
                 span.unwrap_or_default(),
                 self.inline_flow_items(node_cx, cx),

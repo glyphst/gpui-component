@@ -2,6 +2,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt,
+    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -14,6 +15,18 @@ use markdown::{ParseOptions, mdast};
 use crate::text::node::Span;
 
 static MARKDOWN_EXTENSIONS_REVISION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LatexMathMode {
+    Inline,
+    Display,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LatexMathCandidate {
+    range: Range<usize>,
+    mode: LatexMathMode,
+}
 
 /// Re-export of the Markdown AST types used by custom parsers.
 pub use markdown::mdast as markdown_ast;
@@ -244,11 +257,57 @@ impl MarkdownExtensions {
         self
     }
 
-    /// Enable `$...$` and `$$...$$` parsing in `markdown-rs`.
+    /// Enable `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` math parsing.
     pub fn math(mut self) -> Self {
         self.enable_math = true;
         self.bump_revision();
         self
+    }
+
+    /// Parse Markdown with all constructs enabled on these extensions.
+    ///
+    /// LaTeX-style math delimiters are converted only in a temporary,
+    /// byte-for-byte parsing copy. Node positions therefore continue to refer
+    /// to `source`, so selection and source reconstruction preserve the exact
+    /// delimiters supplied by the caller.
+    pub fn parse_ast(&self, source: &str) -> Result<mdast::Node, SharedString> {
+        let options = self.parse_options();
+        let original = markdown::to_mdast(source, &options)
+            .map_err(|error| SharedString::from(error.to_string()))?;
+        if !self.enable_math {
+            return Ok(original);
+        }
+
+        let mut candidates = latex_math_candidates(source, &original);
+        if candidates.is_empty() {
+            return Ok(original);
+        }
+
+        loop {
+            let normalized = normalize_latex_math_candidates(source, &candidates);
+            let Ok(parsed) = markdown::to_mdast(&normalized, &options) else {
+                return Ok(original);
+            };
+            let parsed_math = parsed_math_ranges(&parsed);
+            let retained = candidates
+                .iter()
+                .filter(|candidate| {
+                    parsed_math.iter().any(|(range, is_display)| {
+                        range == &candidate.range
+                            && (candidate.mode == LatexMathMode::Display || !is_display)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if retained.len() == candidates.len() {
+                return Ok(parsed);
+            }
+            if retained.is_empty() {
+                return Ok(original);
+            }
+            candidates = retained;
+        }
     }
 
     /// Register a parser for block-level Markdown AST nodes.
@@ -441,4 +500,299 @@ impl MarkdownExtensions {
     fn bump_revision(&mut self) {
         self.revision = MARKDOWN_EXTENSIONS_REVISION.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+fn latex_math_candidates(source: &str, root: &mdast::Node) -> Vec<LatexMathCandidate> {
+    if !source.contains("\\(") && !source.contains("\\[") {
+        return Vec::new();
+    }
+
+    let mut containers = Vec::new();
+    let mut protected = Vec::new();
+    collect_math_source_ranges(root, &mut containers, &mut protected);
+    protected.sort_by_key(|range| range.start);
+
+    let mut candidates = Vec::new();
+    collect_display_candidates(source, &protected, &mut candidates);
+
+    let mut barriers = protected.clone();
+    barriers.extend(candidates.iter().map(|candidate| candidate.range.clone()));
+    barriers.sort_by_key(|range| range.start);
+
+    for container in containers {
+        if let Some(display) = standalone_display_candidate(source, &container, &protected) {
+            candidates.push(display);
+            continue;
+        }
+
+        let mut cursor = container.start;
+        for barrier in barriers
+            .iter()
+            .filter(|barrier| barrier.start < container.end && barrier.end > container.start)
+        {
+            let barrier_start = barrier.start.clamp(container.start, container.end);
+            if cursor < barrier_start {
+                collect_inline_candidates(source, cursor..barrier_start, &mut candidates);
+            }
+            cursor = cursor.max(barrier.end.min(container.end));
+        }
+        if cursor < container.end {
+            collect_inline_candidates(source, cursor..container.end, &mut candidates);
+        }
+    }
+
+    candidates.sort_by_key(|candidate| candidate.range.start);
+    candidates.dedup_by(|left, right| left.range == right.range);
+    candidates
+}
+
+fn collect_math_source_ranges(
+    node: &mdast::Node,
+    containers: &mut Vec<Range<usize>>,
+    protected: &mut Vec<Range<usize>>,
+) {
+    let range = node
+        .position()
+        .map(|position| position.start.offset..position.end.offset);
+
+    match node {
+        mdast::Node::Paragraph(_) | mdast::Node::Heading(_) | mdast::Node::TableCell(_) => {
+            if let Some(range) = range.clone() {
+                containers.push(range);
+            }
+        }
+        mdast::Node::InlineCode(_)
+        | mdast::Node::InlineMath(_)
+        | mdast::Node::Code(_)
+        | mdast::Node::Math(_)
+        | mdast::Node::Html(_)
+        | mdast::Node::Link(_)
+        | mdast::Node::LinkReference(_)
+        | mdast::Node::Image(_)
+        | mdast::Node::ImageReference(_)
+        | mdast::Node::Definition(_)
+        | mdast::Node::MdxjsEsm(_)
+        | mdast::Node::MdxTextExpression(_)
+        | mdast::Node::MdxFlowExpression(_)
+        | mdast::Node::MdxJsxTextElement(_)
+        | mdast::Node::MdxJsxFlowElement(_)
+        | mdast::Node::Toml(_)
+        | mdast::Node::Yaml(_) => {
+            if let Some(range) = range {
+                protected.push(range);
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_math_source_ranges(child, containers, protected);
+        }
+    }
+}
+
+fn standalone_display_candidate(
+    source: &str,
+    container: &Range<usize>,
+    protected: &[Range<usize>],
+) -> Option<LatexMathCandidate> {
+    let container_source = source.get(container.clone())?;
+    let trimmed_start = container_source.len() - container_source.trim_start().len();
+    let trimmed_end = container_source.trim_end().len();
+    let start = container.start + trimmed_start;
+    let end = container.start + trimmed_end;
+    let candidate_source = source.get(start..end)?;
+
+    if !candidate_source.starts_with("\\[")
+        || !candidate_source.ends_with("\\]")
+        || candidate_source.len() <= 4
+        || !is_unescaped_backslash(source.as_bytes(), start)
+        || !is_unescaped_backslash(source.as_bytes(), end - 2)
+        || protected
+            .iter()
+            .any(|barrier| barrier.start < end && barrier.end > start)
+        || !safe_dollar_fence_contents(source.get(start + 2..end - 2)?)
+    {
+        return None;
+    }
+
+    Some(LatexMathCandidate {
+        range: start..end,
+        mode: LatexMathMode::Display,
+    })
+}
+
+fn collect_display_candidates(
+    source: &str,
+    protected: &[Range<usize>],
+    candidates: &mut Vec<LatexMathCandidate>,
+) {
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+
+    while cursor + 1 < bytes.len() {
+        if bytes[cursor] != b'\\'
+            || bytes[cursor + 1] != b'['
+            || !is_unescaped_backslash(bytes, cursor)
+            || !line_prefix_is_whitespace(source, cursor)
+            || protected
+                .iter()
+                .any(|barrier| barrier.start <= cursor && cursor < barrier.end)
+        {
+            cursor += 1;
+            continue;
+        }
+
+        let open = cursor;
+        let open_line_end = line_end(source, open);
+        let opener_occupies_line = source[open + 2..open_line_end].trim().is_empty();
+        let mut close = open + 2;
+        let mut matched = None;
+
+        while close + 1 < bytes.len() {
+            if bytes[close] == b'\\'
+                && bytes[close + 1] == b']'
+                && is_unescaped_backslash(bytes, close)
+            {
+                let close_line_end = line_end(source, close);
+                let same_line = close < open_line_end;
+                let standalone_close = line_prefix_is_whitespace(source, close)
+                    && source[close + 2..close_line_end].trim().is_empty();
+                let standalone_same_line =
+                    same_line && source[close + 2..open_line_end].trim().is_empty();
+
+                if standalone_same_line || (!same_line && opener_occupies_line && standalone_close)
+                {
+                    matched = Some(close);
+                    break;
+                }
+            }
+            close += 1;
+        }
+
+        let Some(close) = matched else {
+            cursor = open + 2;
+            continue;
+        };
+        let range = open..close + 2;
+        let overlaps_protected = protected
+            .iter()
+            .any(|barrier| barrier.start < range.end && barrier.end > range.start);
+        if !overlaps_protected && safe_dollar_fence_contents(&source[open + 2..close]) {
+            candidates.push(LatexMathCandidate {
+                range,
+                mode: LatexMathMode::Display,
+            });
+        }
+        cursor = close + 2;
+    }
+}
+
+fn line_prefix_is_whitespace(source: &str, index: usize) -> bool {
+    let start = source[..index]
+        .rfind('\n')
+        .map_or(0, |line_break| line_break + 1);
+    source[start..index].trim().is_empty()
+}
+
+fn line_end(source: &str, index: usize) -> usize {
+    source[index..]
+        .find('\n')
+        .map_or(source.len(), |line_break| index + line_break)
+}
+
+fn collect_inline_candidates(
+    source: &str,
+    range: Range<usize>,
+    candidates: &mut Vec<LatexMathCandidate>,
+) {
+    let bytes = source.as_bytes();
+    let mut cursor = range.start;
+    while cursor + 1 < range.end {
+        if bytes[cursor] != b'\\'
+            || bytes[cursor + 1] != b'('
+            || !is_unescaped_backslash(bytes, cursor)
+        {
+            cursor += 1;
+            continue;
+        }
+
+        let mut close = cursor + 2;
+        let mut matched = None;
+        while close + 1 < range.end {
+            if bytes[close] == b'\\'
+                && bytes[close + 1] == b')'
+                && is_unescaped_backslash(bytes, close)
+            {
+                matched = Some(close);
+                break;
+            }
+            close += 1;
+        }
+
+        let Some(close) = matched else {
+            break;
+        };
+        if safe_dollar_fence_contents(&source[cursor + 2..close]) {
+            candidates.push(LatexMathCandidate {
+                range: cursor..close + 2,
+                mode: LatexMathMode::Inline,
+            });
+        }
+        cursor = close + 2;
+    }
+}
+
+fn safe_dollar_fence_contents(contents: &str) -> bool {
+    !contents.is_empty()
+        && !contents.starts_with('$')
+        && !contents.ends_with('$')
+        && !contents.contains("$$")
+}
+
+fn is_unescaped_backslash(bytes: &[u8], index: usize) -> bool {
+    let preceding = bytes[..index]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count();
+    preceding % 2 == 0
+}
+
+fn normalize_latex_math_candidates(source: &str, candidates: &[LatexMathCandidate]) -> String {
+    let mut normalized = source.as_bytes().to_vec();
+    for candidate in candidates {
+        normalized[candidate.range.start..candidate.range.start + 2].copy_from_slice(b"$$");
+        normalized[candidate.range.end - 2..candidate.range.end].copy_from_slice(b"$$");
+    }
+    String::from_utf8(normalized).expect("ASCII delimiter replacement must preserve UTF-8")
+}
+
+fn parsed_math_ranges(root: &mdast::Node) -> Vec<(Range<usize>, bool)> {
+    fn visit(node: &mdast::Node, ranges: &mut Vec<(Range<usize>, bool)>) {
+        match node {
+            mdast::Node::InlineMath(_) => {
+                if let Some(position) = node.position() {
+                    ranges.push((position.start.offset..position.end.offset, false));
+                }
+            }
+            mdast::Node::Math(_) => {
+                if let Some(position) = node.position() {
+                    ranges.push((position.start.offset..position.end.offset, true));
+                }
+            }
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                visit(child, ranges);
+            }
+        }
+    }
+
+    let mut ranges = Vec::new();
+    visit(root, &mut ranges);
+    ranges
 }

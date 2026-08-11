@@ -262,7 +262,7 @@ impl TextView {
         self
     }
 
-    /// Enable `$...$` and `$$...$$` Markdown math parsing.
+    /// Enable `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` Markdown math parsing.
     pub fn markdown_math(mut self) -> Self {
         let extensions = Arc::make_mut(&mut self.markdown_extensions);
         *extensions = extensions.clone().math();
@@ -668,7 +668,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn custom_inline_layout_reserves_space_at_narrow_width(cx: &mut TestAppContext) {
+    fn custom_inline_layout_keeps_formula_with_wrapped_suffix(cx: &mut TestAppContext) {
+        #[derive(Clone)]
+        struct InlineMathFixture {
+            source_offset: usize,
+        }
+
         struct InlineMathLayoutRoot;
 
         impl Render for InlineMathLayoutRoot {
@@ -677,37 +682,89 @@ mod tests {
                 _window: &mut Window,
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
+                let source = concat!(
+                    r"- \(T\): number of generated output tokens,",
+                    "\n",
+                    r"- \(L_m\): fixed prefix length containing the visual and prompt tokens,",
+                    "\n",
+                    r"- \(n\): fixed sliding-window width over recently generated tokens.",
+                    "\n\n",
+                    "R-SWA instead keeps **all fixed reference tokens but only the latest ",
+                    r"\(n\)",
+                    " output tokens**. Thus, once ",
+                    r"\(T\ge n\)",
+                    ", its KV cache stays capped at ",
+                    r"\(L_m+n\)",
+                    ", regardless of how long generation continues.",
+                );
+                let bullet_n_offset = source.find(r"\(n\)").unwrap();
+
                 div()
                     .debug_selector(|| "inline-math-layout-container".into())
                     .w(px(350.))
                     .px_2()
-                    .text_size(px(13.))
+                    .font_family(".ZedMono")
+                    .text_size(px(17.))
+                    .line_height(px(29.))
                     .child(
-                        TextView::markdown(
-                            "inline-math-layout",
-                            r#"This sentence uses `$` delimiters to show math inline: $\sqrt{3x-1}+(1+x)^2$ after."#,
-                        )
-                        .selectable(true)
-                        .markdown_math()
-                        .markdown_inline_parser(|node, cx| {
-                            let markdown::mdast::Node::InlineMath(math) = node else {
-                                return None;
-                            };
-                            Some(
-                                crate::text::MarkdownNode::new(
-                                    "math-layout-test",
-                                    math.value.clone(),
-                                )
-                                .text(math.value.clone())
-                                .markdown(cx.node_source(node).unwrap_or_default()),
-                            )
-                        })
-                        .markdown_inline_renderer("math-layout-test", |_, _, _, _| {
-                            div()
-                                .debug_selector(|| "inline-math-layout-formula".into())
-                                .w(px(112.))
-                                .h(px(30.))
-                        }),
+                        div()
+                            .debug_selector(|| "inline-math-layout-body".into())
+                            .w_full()
+                            .child(
+                                TextView::markdown("inline-math-layout", source)
+                                    .selectable(true)
+                                    .markdown_math()
+                                    .markdown_inline_parser(|node, cx| {
+                                        let markdown::mdast::Node::InlineMath(math) = node else {
+                                            return None;
+                                        };
+                                        Some(
+                                            crate::text::MarkdownNode::new(
+                                                "math-layout-test",
+                                                InlineMathFixture {
+                                                    source_offset: cx.offset()
+                                                        + node.position().map_or(0, |position| {
+                                                            position.start.offset
+                                                        }),
+                                                },
+                                            )
+                                            .text(math.value.clone())
+                                            .markdown(cx.node_source(node).unwrap_or_default()),
+                                        )
+                                    })
+                                    .markdown_inline_renderer(
+                                        "math-layout-test",
+                                        move |node, _, _, _| {
+                                            let fixture = node
+                                                .data::<InlineMathFixture>()
+                                                .expect("inline math fixture data");
+                                            let (selector, width, height) = match node.as_text() {
+                                                "T" => ("inline-formula-t", px(12.), px(14.)),
+                                                "L_m" => ("inline-formula-lm", px(24.), px(16.)),
+                                                "n" if fixture.source_offset == bullet_n_offset => {
+                                                    ("inline-formula-bullet-n", px(11.), px(13.))
+                                                }
+                                                "n" => ("inline-formula-body-n", px(11.), px(13.)),
+                                                r"T\ge n" => {
+                                                    ("inline-formula-t-ge-n", px(46.), px(16.))
+                                                }
+                                                "L_m+n" => {
+                                                    ("inline-formula-lm-plus-n", px(42.), px(16.))
+                                                }
+                                                value => panic!("unexpected formula {value}"),
+                                            };
+                                            div()
+                                                .debug_selector(move || selector.into())
+                                                .w(width)
+                                                .h(height)
+                                        },
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "inline-math-layout-footer".into())
+                            .h(px(1.)),
                     )
             }
         }
@@ -724,7 +781,8 @@ mod tests {
         });
 
         let container = cx.debug_bounds("inline-math-layout-container").unwrap();
-        let formula = cx.debug_bounds("inline-math-layout-formula").unwrap();
+        let body = cx.debug_bounds("inline-math-layout-body").unwrap();
+        let footer = cx.debug_bounds("inline-math-layout-footer").unwrap();
         let text_bounds = cx.update(|window, cx| {
             crate::Root::read(window, cx)
                 .selectable_text_inlines
@@ -733,26 +791,66 @@ mod tests {
                 .copied()
                 .collect::<Vec<_>>()
         });
-        assert!(
-            text_bounds.len() >= 2,
-            "expected wrapped text on both sides"
-        );
         for text in &text_bounds {
             assert!(
-                text.left() >= container.left() - px(0.5)
-                    && text.right() <= container.right() + px(0.5),
-                "selectable text escaped the padded Markdown container: container={container:?}, text={text:?}"
-            );
-            let overlap = formula.intersect(&text).size;
-            assert!(
-                overlap.width == px(0.) || overlap.height == px(0.),
-                "custom inline formula overlaps selectable text: formula={formula:?}, text={text:?}"
+                text.left() >= body.left() - px(0.5)
+                    && text.right() <= body.right() + px(0.5)
+                    && text.top() >= body.top() - px(0.5)
+                    && text.bottom() <= body.bottom() + px(0.5),
+                "selectable text escaped the Markdown body: body={body:?}, text={text:?}"
             );
         }
+
+        for (ix, left) in text_bounds.iter().enumerate() {
+            for right in &text_bounds[ix + 1..] {
+                let overlap = left.intersect(right).size;
+                assert!(
+                    overlap.width <= px(0.5) || overlap.height <= px(0.5),
+                    "selectable text fragments overlap: left={left:?}, right={right:?}"
+                );
+            }
+        }
+
+        let formula_selectors = [
+            "inline-formula-t",
+            "inline-formula-lm",
+            "inline-formula-bullet-n",
+            "inline-formula-body-n",
+            "inline-formula-t-ge-n",
+            "inline-formula-lm-plus-n",
+        ];
+        for selector in formula_selectors {
+            let formula = cx.debug_bounds(selector).unwrap();
+            assert!(
+                formula.left() >= body.left() - px(0.5)
+                    && formula.right() <= body.right() + px(0.5)
+                    && formula.top() >= body.top() - px(0.5)
+                    && formula.bottom() <= body.bottom() + px(0.5),
+                "custom inline formula escaped the Markdown body: body={body:?}, formula={formula:?}"
+            );
+            assert!(
+                text_bounds.iter().any(|text| {
+                    text.left() >= formula.right() - px(0.5)
+                        && text.top() < formula.bottom()
+                        && text.bottom() > formula.top()
+                }),
+                "formula should share its rendered line with the following definition: selector={selector}, formula={formula:?}, text={text_bounds:?}"
+            );
+            for text in &text_bounds {
+                let overlap = formula.intersect(text).size;
+                assert!(
+                    overlap.width == px(0.) || overlap.height == px(0.),
+                    "custom inline formula overlaps selectable text: formula={formula:?}, text={text:?}"
+                );
+            }
+        }
         assert!(
-            formula.left() >= container.left() - px(0.5)
-                && formula.right() <= container.right() + px(0.5),
-            "custom inline formula escaped the padded Markdown container: container={container:?}, formula={formula:?}"
+            body.bottom() <= footer.top(),
+            "mixed inline paragraph overlapped following content: body={body:?}, footer={footer:?}"
+        );
+        assert!(
+            body.left() >= container.left() && body.right() <= container.right(),
+            "Markdown body escaped its padded container: container={container:?}, body={body:?}"
         );
     }
 

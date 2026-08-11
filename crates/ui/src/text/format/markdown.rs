@@ -14,10 +14,8 @@ use crate::text::{
 
 /// Parse Markdown into a tree of nodes.
 pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
-    let options = cx.markdown_extensions.parse_options();
-    markdown::to_mdast(&source, &options)
-        .map(|n| ast_to_document(source, n, cx))
-        .map_err(|e| e.to_string().into())
+    let root = cx.markdown_extensions.parse_ast(source)?;
+    Ok(ast_to_document(source, root, cx))
 }
 
 fn parse_table_row(table: &mut Table, node: &mdast::TableRow, source: &str, cx: &mut NodeContext) {
@@ -567,6 +565,39 @@ mod tests {
 
     use crate::text::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
 
+    fn math_nodes(root: &Node) -> Vec<(String, Range<usize>, bool)> {
+        fn visit(node: &Node, found: &mut Vec<(String, Range<usize>, bool)>) {
+            match node {
+                Node::InlineMath(math) => {
+                    let position = math.position.as_ref().expect("math should have a position");
+                    found.push((
+                        math.value.clone(),
+                        position.start.offset..position.end.offset,
+                        false,
+                    ));
+                }
+                Node::Math(math) => {
+                    let position = math.position.as_ref().expect("math should have a position");
+                    found.push((
+                        math.value.clone(),
+                        position.start.offset..position.end.offset,
+                        true,
+                    ));
+                }
+                _ => {}
+            }
+            if let Some(children) = node.children() {
+                for child in children {
+                    visit(child, found);
+                }
+            }
+        }
+
+        let mut found = Vec::new();
+        visit(root, &mut found);
+        found
+    }
+
     #[test]
     fn test_nested_emphasis_merges_text_marks() {
         let mut cx = NodeContext::default();
@@ -804,6 +835,105 @@ mod tests {
         assert_eq!(custom.as_text(), "x^2");
         assert_eq!(custom.as_markdown(), "$x^2$");
         assert_eq!(document.text(), "before x^2 after\n");
+    }
+
+    #[test]
+    fn math_extensions_parse_latex_and_dollar_delimiters_with_original_offsets() {
+        let source = "Inline \\(x^2\\), dollar $y$, and display:\n\n\\[\n\\boxed{z}\n\\]";
+        let extensions = MarkdownExtensions::default().math();
+        let root = extensions.parse_ast(source).unwrap();
+        let math = math_nodes(&root);
+
+        assert_eq!(math.len(), 3);
+        assert_eq!(math[0].0, "x^2");
+        assert_eq!(&source[math[0].1.clone()], "\\(x^2\\)");
+        assert!(!math[0].2);
+        assert_eq!(math[1].0, "y");
+        assert_eq!(&source[math[1].1.clone()], "$y$");
+        assert!(!math[1].2);
+        assert_eq!(math[2].0, "\\boxed{z}");
+        assert_eq!(&source[math[2].1.clone()], "\\[\n\\boxed{z}\n\\]");
+        assert!(math[2].2);
+    }
+
+    #[test]
+    fn latex_display_math_can_contain_markdown_block_markers() {
+        let source = r"\[
+\boxed{
+C_{\text{R-SWA}}(T)
+=
+L_m+\min(n,T)
+\leq L_m+n
+}
+\tag{6}
+\]";
+        let extensions = MarkdownExtensions::default().math();
+        let root = extensions.parse_ast(source).unwrap();
+        let math = math_nodes(&root);
+
+        assert_eq!(math.len(), 1);
+        assert_eq!(math[0].1, 0..source.len());
+        assert!(math[0].2);
+        assert_eq!(
+            math[0].0,
+            r"\boxed{
+C_{\text{R-SWA}}(T)
+=
+L_m+\min(n,T)
+\leq L_m+n
+}
+\tag{6}"
+        );
+    }
+
+    #[test]
+    fn latex_math_preserves_original_markdown_for_custom_nodes() {
+        let extensions = MarkdownExtensions::default()
+            .math()
+            .plugin(InlineMathPlugin { full_width: false });
+        let mut cx = NodeContext {
+            markdown_extensions: extensions.into(),
+            ..NodeContext::default()
+        };
+        let source = r"before \(x^2\) after";
+        let document = parse(source, &mut cx).unwrap();
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let custom = paragraph.children[1]
+            .custom
+            .as_ref()
+            .expect("expected custom inline node");
+
+        assert_eq!(custom.as_text(), "x^2");
+        assert_eq!(custom.as_markdown(), r"\(x^2\)");
+        assert_eq!(document.source.as_ref(), source);
+    }
+
+    #[test]
+    fn latex_math_ignores_literal_and_incomplete_delimiters() {
+        let source = concat!(
+            r"escaped \\(literal\\), real \(x\), incomplete \(open, ",
+            r"code `\(inline\)`, link [\(label\)](https://example.test/\(path\))",
+            "\n\n```tex\n\\(block\\)\n```",
+        );
+        let extensions = MarkdownExtensions::default().math();
+        let root = extensions.parse_ast(source).unwrap();
+        let math = math_nodes(&root);
+
+        assert_eq!(math.len(), 1);
+        assert_eq!(math[0].0, "x");
+        assert_eq!(&source[math[0].1.clone()], r"\(x\)");
+    }
+
+    #[test]
+    fn same_line_latex_display_math_is_preserved_as_display_source() {
+        let source = r"- \[x + y\]";
+        let extensions = MarkdownExtensions::default().math();
+        let root = extensions.parse_ast(source).unwrap();
+        let math = math_nodes(&root);
+
+        assert_eq!(math, vec![("x + y".to_string(), 2..source.len(), false)]);
     }
 
     #[test]

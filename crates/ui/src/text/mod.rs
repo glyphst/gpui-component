@@ -1,7 +1,6 @@
 mod document;
 mod format;
 mod inline;
-mod inline_flex;
 mod inline_flow;
 mod markdown_ext;
 mod node;

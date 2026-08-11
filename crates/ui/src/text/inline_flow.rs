@@ -6,9 +6,10 @@ use std::{
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Element, ElementId,
     GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _, IntoElement,
-    LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine, SharedString,
-    SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun, TextStyle,
-    WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
+    LayoutId, LineFragment as WrapLineFragment, ObjectFit, ParentElement as _, Pixels, ShapedLine,
+    SharedString, SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    TextRun, TextStyle, WhiteSpace, Window, div, img, point, prelude::FluentBuilder as _, px,
+    relative, size,
 };
 
 use crate::{
@@ -111,6 +112,13 @@ struct LineFragmentLayout {
     source_range: Range<usize>,
 }
 
+#[derive(Clone)]
+struct InlineFlowTextMetrics {
+    style: TextStyle,
+    font_size: Pixels,
+    line_height: Pixels,
+}
+
 enum LineFragmentKind {
     Text {
         text: SharedString,
@@ -211,6 +219,12 @@ impl Element for InlineFlow {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text_style = window.text_style();
+        let rem_size = window.rem_size();
+        let text_metrics = InlineFlowTextMetrics {
+            font_size: text_style.font_size.to_pixels(rem_size),
+            line_height: window.line_height(),
+            style: text_style.clone(),
+        };
         let mut custom_elements = Vec::with_capacity(self.items.len());
         let measure_items = self
             .items
@@ -238,8 +252,6 @@ impl Element for InlineFlow {
                 }
             })
             .collect::<Vec<_>>();
-        let line_height = window.line_height();
-        let rem_size = window.rem_size();
         let image_sizes = measure_items
             .iter()
             .enumerate()
@@ -249,7 +261,7 @@ impl Element for InlineFlow {
                     url,
                     *width,
                     *height,
-                    line_height,
+                    text_metrics.line_height,
                     rem_size,
                     window,
                     cx,
@@ -266,8 +278,7 @@ impl Element for InlineFlow {
 
         let layout_id = window.request_measured_layout(Default::default(), {
             move |known_dimensions, available_space, window, _cx| {
-                let text_style = window.text_style();
-                let wrap_width = if text_style.white_space == WhiteSpace::Normal {
+                let wrap_width = if text_metrics.style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         AvailableSpace::Definite(width) => Some(width),
                         _ => None,
@@ -278,7 +289,7 @@ impl Element for InlineFlow {
                 let layout = layout_flow(
                     &measure_items,
                     &image_sizes,
-                    &text_style,
+                    &text_metrics,
                     wrap_width,
                     window,
                 );
@@ -334,14 +345,22 @@ impl Element for InlineFlow {
                         state.set_text(text);
                     }
 
-                    let mut element = Inline::new(
-                        elements.len(),
-                        state,
-                        links,
-                        highlights,
-                        self.link_click_handler.clone(),
-                    )
-                    .into_any_element();
+                    // InlineFlow owns wrapping for these fragments. Keep the
+                    // nested StyledText on one line so it cannot wrap again
+                    // using a slightly different width and paint outside the
+                    // height reserved by this layout.
+                    let mut element = div()
+                        .w(fragment_size.width)
+                        .h(fragment_size.height)
+                        .whitespace_nowrap()
+                        .child(Inline::new(
+                            elements.len(),
+                            state,
+                            links,
+                            highlights,
+                            self.link_click_handler.clone(),
+                        ))
+                        .into_any_element();
                     element.prepaint_as_root(
                         bounds.origin + origin,
                         size(
@@ -469,19 +488,16 @@ impl MeasureItem {
 fn layout_flow(
     items: &[MeasureItem],
     image_sizes: &[Option<Size<Pixels>>],
-    text_style: &TextStyle,
+    text_metrics: &InlineFlowTextMetrics,
     wrap_width: Option<Pixels>,
     window: &mut Window,
 ) -> InlineFlowLayout {
-    let line_height = window.line_height();
-    let rem_size = window.rem_size();
     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
     if total_len == 0 {
         return InlineFlowLayout::default();
     }
 
-    let line_ranges = line_ranges(items, image_sizes, text_style, wrap_width, window);
-    let font_size = text_style.font_size.to_pixels(rem_size);
+    let line_ranges = line_ranges(items, image_sizes, text_metrics, wrap_width, window);
     let mut fragments = Vec::new();
     let mut max_width = Pixels::ZERO;
     let mut y = Pixels::ZERO;
@@ -489,7 +505,7 @@ fn layout_flow(
     for line_range in line_ranges {
         let mut line_fragments = Vec::new();
         let mut line_width = Pixels::ZERO;
-        let mut actual_line_height = line_height;
+        let mut actual_line_height = text_metrics.line_height;
         let mut item_start = 0;
 
         for (item_ix, item) in items.iter().enumerate() {
@@ -519,9 +535,14 @@ fn layout_flow(
                         let links = slice_ranges(links, local_start, local_end, |range, link| {
                             (range, link.clone())
                         });
-                        let runs = runs_for_highlights(&subtext, text_style, highlights.clone());
-                        let shaped_line = shape_line(subtext.clone(), font_size, &runs, window);
-                        let width = shaped_line.width();
+                        let runs =
+                            runs_for_highlights(&subtext, &text_metrics.style, highlights.clone());
+                        let shaped_line =
+                            shape_line(subtext.clone(), text_metrics.font_size, &runs, window);
+                        // StyledText rounds its measured width up. Reserve the
+                        // same width here so adjacent fragments cannot overlap
+                        // by a fractional pixel.
+                        let width = shaped_line.width().ceil();
                         line_width += width;
                         line_fragments.push(LineFragmentLayout {
                             item_ix,
@@ -530,7 +551,7 @@ fn layout_flow(
                                 links,
                                 highlights,
                             },
-                            size: size(width, line_height),
+                            size: size(width, text_metrics.line_height),
                             source_range: local_start..local_end,
                         });
                     }
@@ -611,7 +632,7 @@ fn layout_flow(
 fn line_ranges(
     items: &[MeasureItem],
     image_sizes: &[Option<Size<Pixels>>],
-    text_style: &TextStyle,
+    text_metrics: &InlineFlowTextMetrics,
     wrap_width: Option<Pixels>,
     window: &mut Window,
 ) -> Vec<Range<usize>> {
@@ -619,8 +640,6 @@ fn line_ranges(
     let Some(wrap_width) = wrap_width else {
         return std::iter::once(0..total_len).collect();
     };
-    let rem_size = window.rem_size();
-
     let wrap_fragments = items
         .iter()
         .enumerate()
@@ -635,10 +654,9 @@ fn line_ranges(
             MeasureItem::Custom { size } => WrapLineFragment::element(size.width, CUSTOM_LEN),
         })
         .collect::<Vec<_>>();
-    let font_size = text_style.font_size.to_pixels(rem_size);
     let mut wrapper = window
         .text_system()
-        .line_wrapper(text_style.font(), font_size);
+        .line_wrapper(text_metrics.style.font(), text_metrics.font_size);
     let boundaries = wrapper
         .wrap_line(&wrap_fragments, wrap_width)
         .map(|boundary| boundary.ix.min(total_len))
