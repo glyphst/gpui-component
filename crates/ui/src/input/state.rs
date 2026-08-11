@@ -4,12 +4,12 @@
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 use anyhow::Result;
 use gpui::{
-    Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString, Styled as _,
-    Subscription, Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _,
-    px,
+    Action, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, Edges, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine,
+    SharedString, Styled as _, Subscription, Task, UTF16Selection, Window, actions, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui::{Half, TextAlign};
 use lsp_types::CompletionItem;
@@ -401,6 +401,7 @@ pub struct InputState {
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
+    pub(super) passthrough_structured_paste: bool,
     pub(super) soft_wrap: bool,
     pub(super) wrapping_indent: WrappingIndent,
     /// See [`Self::scroll_beyond_last_line`].
@@ -542,6 +543,7 @@ impl InputState {
             masked: false,
             clean_on_escape: false,
             submit_on_enter: false,
+            passthrough_structured_paste: false,
             soft_wrap: true,
             wrapping_indent: WrappingIndent::default(),
             scroll_beyond_last_line: None,
@@ -991,6 +993,14 @@ impl InputState {
     /// Default is `false` (both `Enter` and `Shift+Enter` insert a newline).
     pub fn submit_on_enter(mut self, submit: bool) -> Self {
         self.submit_on_enter = submit;
+        self
+    }
+
+    /// Let an ancestor handle clipboard entries whose primary representation is
+    /// an image or external paths. Plain string clipboard entries continue to
+    /// use the input's built-in paste behavior.
+    pub fn passthrough_structured_paste(mut self, passthrough: bool) -> Self {
+        self.passthrough_structured_paste = passthrough;
         self
     }
 
@@ -2362,6 +2372,15 @@ impl InputState {
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
+            if self.passthrough_structured_paste
+                && matches!(
+                    clipboard.entries().first(),
+                    Some(ClipboardEntry::Image(_) | ClipboardEntry::ExternalPaths(_))
+                )
+            {
+                cx.propagate();
+                return;
+            }
             let new_text = clipboard.text().unwrap_or_default();
             self.replace_text_in_range_silent(None, &new_text, window, cx);
             self.scroll_to(self.cursor(), None, cx);
@@ -4315,6 +4334,56 @@ ORDER BY id
         });
 
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn test_structured_paste_passthrough_is_opt_in(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.passthrough_structured_paste(true));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem {
+                entries: vec![
+                    ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                        vec![std::path::PathBuf::from("/tmp/pasted-image.png")].into(),
+                    )),
+                    ClipboardEntry::from("alternate text".to_string()),
+                ],
+            });
+            input.update(cx, |state, cx| {
+                state.paste(&Paste, window, cx);
+                assert_eq!(state.value(), "");
+            });
+
+            cx.write_to_clipboard(ClipboardItem::new_string("plain text".to_string()));
+            input.update(cx, |state, cx| {
+                state.paste(&Paste, window, cx);
+                assert_eq!(state.value(), "plain text");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_structured_paste_keeps_existing_behavior_by_default(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem {
+                entries: vec![
+                    ClipboardEntry::ExternalPaths(gpui::ExternalPaths(
+                        vec![std::path::PathBuf::from("/tmp/pasted-image.png")].into(),
+                    )),
+                    ClipboardEntry::from("alternate text".to_string()),
+                ],
+            });
+            input.update(cx, |state, cx| {
+                state.paste(&Paste, window, cx);
+                assert_eq!(state.value(), "alternate text");
+            });
+        });
     }
 
     /// `replace_all` on a multi-line (non-code-editor) input clears the
