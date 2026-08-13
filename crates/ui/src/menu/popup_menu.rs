@@ -4,7 +4,7 @@ use crate::menu::menu_item::MenuItemElement;
 use crate::scroll::ScrollableElement;
 use crate::{
     ActiveTheme, ElementExt, Icon, IconName, Sizable as _,
-    animation::{Transition, cubic_bezier},
+    animation::{EffectTransition, cubic_bezier},
     h_flex, v_flex,
 };
 use crate::{Side, Size, StyledExt, kbd::Kbd};
@@ -1481,7 +1481,7 @@ impl Render for PopupMenu {
             });
 
         if self.animated {
-            Transition::new(Duration::from_millis(140))
+            EffectTransition::new(Duration::from_millis(140))
                 .ease(cubic_bezier(0.25, 0.1, 0.25, 1.0))
                 .slide_y(px(-2.0), px(0.0))
                 .fade(0.0, 1.0)

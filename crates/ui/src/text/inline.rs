@@ -14,7 +14,7 @@ use gpui::{
 
 use crate::{
     ActiveTheme, WindowExt as _,
-    global_state::GlobalState,
+    global_state::UiGlobalState,
     input::Selection,
     text::TextViewContextMenuRequest,
     text::TextViewMultiClickKind,
@@ -113,7 +113,7 @@ impl Inline {
         window: &mut Window,
         cx: &mut App,
     ) -> (bool, bool, Option<Selection>) {
-        let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
+        let Some(text_view_state) = UiGlobalState::global(cx).text_view_state() else {
             return (false, false, None);
         };
 
@@ -437,7 +437,7 @@ impl Element for Inline {
         }
 
         if is_selectable {
-            if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+            if let Some(text_view_state) = UiGlobalState::global(cx).text_view_state().cloned() {
                 let text_bounds = self.text_line_bounds(
                     &text_layout,
                     text_layout.line_height(),
@@ -456,7 +456,7 @@ impl Element for Inline {
                 let text_layout = text_layout.clone();
                 let inline_state = self.state.clone();
                 let text = self.text.clone();
-                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+                let text_view_state = UiGlobalState::global(cx).text_view_state().cloned();
                 move |event: &MouseDownEvent, phase, window, cx| {
                     if !phase.bubble()
                         || !hitbox.is_hovered(window)
@@ -496,7 +496,7 @@ impl Element for Inline {
             });
         }
 
-        if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned()
+        if let Some(text_view_state) = UiGlobalState::global(cx).text_view_state().cloned()
             && let Some(on_context_menu) = text_view_state.read(cx).on_context_menu.clone()
         {
             window.on_mouse_event({
@@ -557,7 +557,7 @@ impl Element for Inline {
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();
                 let hitbox = hitbox.clone();
-                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+                let text_view_state = UiGlobalState::global(cx).text_view_state().cloned();
                 let link_click_handler = self.link_click_handler.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {

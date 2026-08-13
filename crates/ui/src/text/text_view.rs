@@ -13,7 +13,7 @@ use crate::text::TextViewFormat;
 use crate::text::markdown_ext::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
 use crate::text::node::CodeBlock;
 use crate::text::state::{SelectionFormat, TextViewState};
-use crate::{global_state::GlobalState, text::TextViewStyle};
+use crate::{global_state::UiGlobalState, text::TextViewStyle};
 
 /// Type for code block actions generator function.
 pub(crate) type CodeBlockActionsFn =
@@ -465,11 +465,11 @@ impl Element for TextView {
             crate::Root::register_selectable_text_view(state, hitbox, window, cx);
         }
 
-        GlobalState::global_mut(cx)
+        UiGlobalState::global_mut(cx)
             .text_view_state_stack
             .push(state.clone());
         request_layout.element.paint(window, cx);
-        GlobalState::global_mut(cx).text_view_state_stack.pop();
+        UiGlobalState::global_mut(cx).text_view_state_stack.pop();
     }
 }
 
@@ -612,6 +612,23 @@ mod tests {
             inline_bounds[1].left() - inline_bounds[0].right() < px(40.),
             "unloaded inline image fallback should stay generic and compact"
         );
+    }
+
+    #[gpui::test]
+    fn inline_html_image_after_newline_does_not_panic(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            TextViewTestRoot::new(
+                "Hi\n[<img src=\"https://example.com/image.svg\">](https://google.com/)",
+                cx,
+            )
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
     }
 
     #[gpui::test]
@@ -865,9 +882,9 @@ mod tests {
                 _cx: &mut Context<Self>,
             ) -> impl IntoElement {
                 div().w(px(840.)).h(px(400.)).child(
-                    crate::resizable::h_resizable("markdown-width-test")
-                        .child(crate::resizable::resizable_panel().child(div()))
-                        .child(crate::resizable::resizable_panel().child(
+                    crate::h_resizable("markdown-width-test")
+                        .child(crate::resizable_panel().child(div()))
+                        .child(crate::resizable_panel().child(
                             TextView::markdown(
                                 "list-with-code",
                                 "1. List item\n   ```rust\n   nested code\n   ```\n\n```rust\ntop-level code\n```",

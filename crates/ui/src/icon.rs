@@ -4,16 +4,8 @@ use gpui::{
     SharedString, StyleRefinement, Styled, Svg, Transformation, Window,
     prelude::FluentBuilder as _, svg,
 };
+pub use gpui_base::IconNamed;
 use gpui_component_macros::icon_named;
-
-/// Types implementing this trait can automatically be converted to [`Icon`].
-///
-/// This allows you to implement a custom version of [`IconName`] that functions as a drop-in
-/// replacement for other UI components.
-pub trait IconNamed {
-    /// Returns the embedded path of the icon.
-    fn path(self) -> SharedString;
-}
 
 impl<T: IconNamed> From<T> for Icon {
     fn from(value: T) -> Self {
