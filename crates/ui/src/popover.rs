@@ -16,6 +16,9 @@ pub use gpui_base::PopoverState;
 
 pub(crate) fn init(_: &mut App) {}
 
+const ENTER_DURATION: Duration = Duration::from_millis(140);
+const EXIT_DURATION: Duration = Duration::from_millis(100);
+
 /// A popover element that can be triggered by a button or any other element.
 #[derive(IntoElement)]
 pub struct Popover {
@@ -214,13 +217,13 @@ impl Popover {
 }
 
 impl RenderOnce for Popover {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let anchor = self.anchor;
         let appearance = self.appearance;
         let style = self.style;
         let children = self.children;
         let content = self.content;
-        let animated = self.animated;
+        let animated = self.animated && !cx.reduce_motion();
         let trigger_style = self.trigger_style;
 
         BasePopover::new(self.id)
@@ -228,6 +231,11 @@ impl RenderOnce for Popover {
             .mouse_button(self.mouse_button)
             .default_open(self.default_open)
             .overlay_closable(self.overlay_closable)
+            .exit_duration(if animated {
+                EXIT_DURATION
+            } else {
+                Duration::ZERO
+            })
             .content(move |state, window, cx| {
                 let content = Self::render_popover_content(anchor, appearance, window, cx)
                     .when_some(content, |this, content| {
@@ -236,8 +244,15 @@ impl RenderOnce for Popover {
                     .children(children)
                     .refine_style(&style);
 
-                if animated {
-                    EffectTransition::new(Duration::from_millis(140))
+                if animated && state.is_closing() {
+                    EffectTransition::new(EXIT_DURATION)
+                        .ease(cubic_bezier(0.25, 0.1, 0.25, 1.0))
+                        .slide_y(px(0.0), px(-2.0))
+                        .fade(1.0, 0.0)
+                        .apply(content, "popover-exit")
+                        .into_any_element()
+                } else if animated {
+                    EffectTransition::new(ENTER_DURATION)
                         .ease(cubic_bezier(0.25, 0.1, 0.25, 1.0))
                         .slide_y(px(-2.0), px(0.0))
                         .fade(0.0, 1.0)
@@ -328,6 +343,7 @@ mod tests {
 
     struct PopoverHarness {
         changes: Rc<RefCell<Vec<bool>>>,
+        animated: bool,
     }
 
     impl Render for PopoverHarness {
@@ -335,6 +351,7 @@ mod tests {
             let changes = self.changes.clone();
             Popover::new("runtime-popover")
                 .trigger(Button::new("runtime-trigger").label("Open").size(px(100.)))
+                .animated(self.animated)
                 .content(|_, _, _| {
                     div()
                         .debug_selector(|| "runtime-popover-content".into())
@@ -355,7 +372,45 @@ mod tests {
         let changes = Rc::new(RefCell::new(Vec::new()));
         let (_, cx) = cx.add_window_view({
             let changes = changes.clone();
-            move |_, _| PopoverHarness { changes }
+            move |_, _| PopoverHarness {
+                changes,
+                animated: true,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.simulate_click(point(px(20.), px(20.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("runtime-popover-content").is_some());
+
+        cx.simulate_click(point(px(300.), px(300.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("runtime-popover-content").is_some());
+
+        cx.background_executor.advance_clock(EXIT_DURATION);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("runtime-popover-content").is_none());
+        // Preserve the existing event ordering: the trigger wrapper and the
+        // popup's mouse-down-out path can both close the uncontrolled popover.
+        assert_eq!(&*changes.borrow(), &[true, false, false]);
+    }
+
+    #[gpui::test]
+    fn disabled_animation_unmounts_immediately(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::GlobalState::init(cx);
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, _| PopoverHarness {
+                changes,
+                animated: false,
+            }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -366,9 +421,34 @@ mod tests {
         cx.simulate_click(point(px(300.), px(300.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("runtime-popover-content").is_none());
-        // Preserve the existing event ordering: the trigger wrapper and the
-        // popup's mouse-down-out path can both close the uncontrolled popover.
-        assert_eq!(&*changes.borrow(), &[true, false, false]);
+    }
+
+    #[gpui::test]
+    fn reduced_motion_unmounts_immediately(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::GlobalState::init(cx);
+            cx.set_global(Theme::default());
+            cx.set_reduce_motion(true);
+            init(cx);
+        });
+
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, _| PopoverHarness {
+                changes,
+                animated: true,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.simulate_click(point(px(20.), px(20.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("runtime-popover-content").is_some());
+
+        cx.simulate_click(point(px(300.), px(300.)), Default::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("runtime-popover-content").is_none());
     }
 
     struct DefaultOpenHarness;

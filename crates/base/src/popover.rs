@@ -1,10 +1,10 @@
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
 use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
     Render, RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled,
-    Subscription, Window, div, prelude::FluentBuilder as _,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::{GlobalState, Popup, Selectable, actions::Cancel};
@@ -27,6 +27,11 @@ pub struct PopoverState {
     tracked_focus_handle: Option<FocusHandle>,
     previous_focus_handle: Option<FocusHandle>,
     open: bool,
+    present: bool,
+    closing: bool,
+    exit_duration: Duration,
+    exit_epoch: usize,
+    exit_task: Option<Task<()>>,
     on_open_change: Option<OpenChangeHandler>,
     dismiss_subscription: Option<Subscription>,
 }
@@ -38,6 +43,11 @@ impl PopoverState {
             tracked_focus_handle: None,
             previous_focus_handle: None,
             open: default_open,
+            present: default_open,
+            closing: false,
+            exit_duration: Duration::ZERO,
+            exit_epoch: 0,
+            exit_task: None,
             on_open_change: None,
             dismiss_subscription: None,
         }
@@ -45,6 +55,21 @@ impl PopoverState {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Returns whether the popover surface should remain mounted.
+    ///
+    /// Presentation facades use this to keep closed content alive briefly for
+    /// an exit transition. Interaction state still follows [`Self::is_open`].
+    #[doc(hidden)]
+    pub fn is_present(&self) -> bool {
+        self.present
+    }
+
+    /// Returns whether a logically closed popover is finishing its exit phase.
+    #[doc(hidden)]
+    pub fn is_closing(&self) -> bool {
+        self.closing
     }
 
     pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -61,12 +86,61 @@ impl PopoverState {
 
     #[doc(hidden)]
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.open == open {
+            return;
+        }
+
         self.open = open;
         if open {
+            self.cancel_exit();
+            self.present = true;
+            self.closing = false;
             GlobalState::register_deferred_popover(&self.focus_handle, cx);
         } else {
             GlobalState::unregister_deferred_popover(&self.focus_handle, cx);
+            self.begin_exit(cx);
         }
+    }
+
+    /// Configures how long a closed surface remains mounted for presentation.
+    #[doc(hidden)]
+    pub fn set_exit_duration(&mut self, duration: Duration, cx: &mut Context<Self>) {
+        if self.exit_duration == duration {
+            return;
+        }
+
+        self.exit_duration = duration;
+        if self.closing {
+            self.begin_exit(cx);
+        }
+    }
+
+    fn cancel_exit(&mut self) {
+        self.exit_epoch = self.exit_epoch.wrapping_add(1);
+        self.exit_task = None;
+    }
+
+    fn begin_exit(&mut self, cx: &mut Context<Self>) {
+        self.cancel_exit();
+        if !self.present || self.exit_duration.is_zero() {
+            self.present = false;
+            self.closing = false;
+            return;
+        }
+
+        self.closing = true;
+        let epoch = self.exit_epoch;
+        let duration = self.exit_duration;
+        self.exit_task = Some(cx.spawn(async move |state, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = state.update(cx, |state, cx| {
+                if !state.open && state.exit_epoch == epoch {
+                    state.present = false;
+                    state.closing = false;
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     #[doc(hidden)]
@@ -153,6 +227,7 @@ pub struct Popover {
     trigger_style: Option<StyleRefinement>,
     mouse_button: MouseButton,
     overlay_closable: bool,
+    exit_duration: Duration,
     on_open_change: Option<OpenChangeHandler>,
 }
 
@@ -169,6 +244,7 @@ impl Popover {
             trigger_style: None,
             mouse_button: MouseButton::Left,
             overlay_closable: true,
+            exit_duration: Duration::ZERO,
             on_open_change: None,
         }
     }
@@ -231,6 +307,13 @@ impl Popover {
         self
     }
 
+    /// Keeps closed content mounted for a presentation-owned exit transition.
+    #[doc(hidden)]
+    pub fn exit_duration(mut self, duration: Duration) -> Self {
+        self.exit_duration = duration;
+        self
+    }
+
     pub fn on_open_change(
         mut self,
         callback: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -259,12 +342,15 @@ impl RenderOnce for Popover {
         state.update(cx, |state, cx| {
             state.track_focus(self.tracked_focus_handle);
             state.set_on_open_change(self.on_open_change);
+            state.set_exit_duration(self.exit_duration, cx);
             if let Some(open) = self.open {
                 state.set_open(open, cx);
             }
         });
 
         let open = state.read(cx).is_open();
+        let present = state.read(cx).is_present();
+        let closing = state.read(cx).is_closing();
         let focus_handle = state.read(cx).focus_handle(cx);
         let Some(trigger) = self.trigger else {
             return div().id("empty").into_any_element();
@@ -294,25 +380,28 @@ impl RenderOnce for Popover {
                     cx.notify(parent_view_id);
                 }
             });
-        if !open {
+        if !present {
             return popup.into_any_element();
         }
 
         let content = div()
             .id("content")
+            .relative()
             // A popover surface is a non-modal dialog: it takes focus and is
             // dismissed with Escape, which is what this role tells assistive
             // technology to expect.
-            .role(Role::Dialog)
             .occlude()
             .tab_group()
-            .track_focus(&focus_handle)
-            .key_context(CONTEXT)
-            .on_action(window.listener_for(&state, PopoverState::on_action_cancel))
+            .when(open, |this| {
+                this.role(Role::Dialog)
+                    .track_focus(&focus_handle)
+                    .key_context(CONTEXT)
+                    .on_action(window.listener_for(&state, PopoverState::on_action_cancel))
+            })
             .when_some(self.content, |this, content| {
                 this.child(state.update(cx, |state, cx| (content)(state, window, cx)))
             })
-            .when(self.overlay_closable, |this| {
+            .when(open && self.overlay_closable, |this| {
                 this.on_mouse_down_out({
                     let state = state.clone();
                     move |_, window, cx| {
@@ -320,6 +409,17 @@ impl RenderOnce for Popover {
                         cx.notify(parent_view_id);
                     }
                 })
+            })
+            .when(closing, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                        .capture_any_mouse_up(|_, _, cx| cx.stop_propagation())
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+                )
             });
         popup.content(content).into_any_element()
     }
@@ -339,11 +439,77 @@ mod tests {
 
             state.update(cx, |state, cx| state.set_open(true, cx));
             assert!(state.read(cx).is_open());
+            assert!(state.read(cx).is_present());
             assert!(GlobalState::is_in_deferred_context(cx));
 
             state.update(cx, |state, cx| state.set_open(false, cx));
             assert!(!state.read(cx).is_open());
+            assert!(!state.read(cx).is_present());
             assert!(!GlobalState::is_in_deferred_context(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn exit_duration_delays_only_physical_unmount(cx: &mut gpui::TestAppContext) {
+        let state = cx.update(|cx| {
+            GlobalState::init(cx);
+            let state = cx.new(|cx| PopoverState::new(false, cx));
+            state.update(cx, |state, cx| {
+                state.set_exit_duration(Duration::from_millis(100), cx);
+                state.set_open(true, cx);
+                state.set_open(false, cx);
+                // Repeated controlled synchronization must not restart the timer.
+                state.set_open(false, cx);
+            });
+            state
+        });
+
+        cx.update(|cx| {
+            let state = state.read(cx);
+            assert!(!state.is_open());
+            assert!(state.is_present());
+            assert!(state.is_closing());
+            assert!(!GlobalState::is_in_deferred_context(cx));
+        });
+
+        cx.executor().advance_clock(Duration::from_millis(99));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(state.read(cx).is_present()));
+
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = state.read(cx);
+            assert!(!state.is_present());
+            assert!(!state.is_closing());
+        });
+    }
+
+    #[gpui::test]
+    fn reopening_cancels_a_pending_exit(cx: &mut gpui::TestAppContext) {
+        let state = cx.update(|cx| {
+            GlobalState::init(cx);
+            let state = cx.new(|cx| PopoverState::new(false, cx));
+            state.update(cx, |state, cx| {
+                state.set_exit_duration(Duration::from_millis(100), cx);
+                state.set_open(true, cx);
+                state.set_open(false, cx);
+            });
+            state
+        });
+
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+        cx.update(|cx| state.update(cx, |state, cx| state.set_open(true, cx)));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let state = state.read(cx);
+            assert!(state.is_open());
+            assert!(state.is_present());
+            assert!(!state.is_closing());
+            assert!(GlobalState::is_in_deferred_context(cx));
         });
     }
 
