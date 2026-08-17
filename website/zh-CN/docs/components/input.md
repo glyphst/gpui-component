@@ -5,12 +5,12 @@ description: 带校验、掩码和多种扩展能力的文本输入组件。
 
 # Input
 
-Input 是一个灵活的文本输入组件，支持校验、输入掩码、前后缀元素以及多种交互状态。
+Input 是一个单行文本输入组件，支持校验、输入掩码、前后缀元素以及多种交互状态。普通多行文本请使用 [Textarea](./textarea.md)，源代码编辑请使用 [Editor](./editor.md)。
 
 ## 导入
 
 ```rust
-use gpui_component::input::{InputState, Input};
+use gpui_component::input::{Input, InputState};
 ```
 
 ## 用法
@@ -99,6 +99,14 @@ Input::new(&input).small()
 
 ```rust
 Input::new(&input).disabled(true)
+```
+
+### 只读态
+
+与 `disabled` 不同，只读输入框保持正常外观，仍然可以聚焦、选中和复制，只是拒绝用户对内容的修改。
+
+```rust
+Input::new(&input).readonly(true)
 ```
 
 ### 按 ESC 清空

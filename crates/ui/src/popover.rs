@@ -5,6 +5,7 @@ use gpui::{
 };
 use std::{rc::Rc, time::Duration};
 
+use crate::ThemeStyled as _;
 use crate::{
     Selectable, StyledExt as _,
     animation::{EffectTransition, cubic_bezier},

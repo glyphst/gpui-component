@@ -23,7 +23,7 @@ fn resolve_menu_widths(options: CompletionMenuOptions, viewport_width: Pixels) -
 use crate::{
     ActiveTheme, IndexPath, Selectable, actions, h_flex,
     input::{
-        self, CompletionMenuOptions, InputState,
+        self, CompletionMenuOptions, EditorState,
         popovers::{editor_popover, render_markdown},
     },
     label::Label,
@@ -178,7 +178,7 @@ impl ListDelegate for ContextMenuDelegate {
 /// A context menu for code completions and code actions.
 pub struct CompletionMenu {
     offset: usize,
-    editor: WeakEntity<InputState>,
+    editor: WeakEntity<EditorState>,
     list: Entity<ListState<ContextMenuDelegate>>,
     open: bool,
 
@@ -191,9 +191,9 @@ pub struct CompletionMenu {
 impl CompletionMenu {
     /// Creates a new `CompletionMenu` with the given offset and completion items.
     ///
-    /// NOTE: This element should not call from InputState::new, unless that will stack overflow.
+    /// NOTE: This element should not call from EditorState::new, unless that will stack overflow.
     pub(crate) fn new(
-        editor: Entity<InputState>,
+        editor: Entity<EditorState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -391,7 +391,7 @@ impl Render for CompletionMenu {
         };
         let abs_pos = editor.read(cx).input_bounds().origin + pos;
         let (min_width, max_width) = resolve_menu_widths(
-            editor.read(cx).lsp.completion_menu,
+            editor.read(cx).lsp().completion_menu,
             window.viewport_size().width,
         );
         let vertical_layout = abs_pos.x + max_width + POPOVER_GAP + max_width + POPOVER_GAP

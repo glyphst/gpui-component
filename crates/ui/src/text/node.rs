@@ -15,7 +15,7 @@ use markdown::mdast;
 use ropey::Rope;
 
 use crate::{
-    ActiveTheme as _, Icon, IconName, StyledExt, WindowExt as _, h_flex,
+    ActiveTheme as _, Icon, IconName, StyledExt, h_flex,
     highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter},
     input::{InputEdit, Point, RopeExt as _},
     scroll::horizontal_scroll_area,
@@ -30,7 +30,10 @@ use crate::{
     v_flex,
 };
 
-use super::{SelectionFormat, TextViewStyle, utils::list_item_prefix};
+use super::{
+    SelectionFormat, TextViewStyle,
+    utils::{image_source, list_item_prefix},
+};
 
 thread_local! {
     static CODE_BLOCK_HIGHLIGHTERS: RefCell<HashMap<SharedString, SyntaxHighlighter>> =
@@ -1419,7 +1422,7 @@ impl Paragraph {
                 }
                 let link_click_handler = node_cx.link_click_handler.clone();
                 child_nodes.push(
-                    img(image.url.clone())
+                    img(image_source(&image.url))
                         .id(ix)
                         .object_fit(ObjectFit::Contain)
                         .max_w(relative(1.))
@@ -1434,7 +1437,7 @@ impl Paragraph {
                                     Tooltip::new(title.clone()).build(window, cx)
                                 })
                                 .on_click(move |event, window, cx| {
-                                    window.end_text_selection(cx);
+                                    gpui_base::TextSelection::end(window, cx);
                                     cx.stop_propagation();
                                     handle_link_click(
                                         &link_click_handler,
@@ -1445,7 +1448,7 @@ impl Paragraph {
                                     );
                                 })
                                 .on_aux_click(move |event, window, cx| {
-                                    window.end_text_selection(cx);
+                                    gpui_base::TextSelection::end(window, cx);
                                     cx.stop_propagation();
                                     handle_link_click(
                                         &aux_link_click_handler,

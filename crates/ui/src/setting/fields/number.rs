@@ -69,7 +69,9 @@ impl SettingFieldRender for NumberField {
         let state_entity = window.use_keyed_state(
             SharedString::from(format!(
                 "number-state-{}-{}-{}",
-                options.page_ix, options.group_ix, options.item_ix
+                options.page_ix(),
+                options.group_ix(),
+                options.item_ix()
             )),
             cx,
             |window, cx| {
@@ -156,7 +158,9 @@ impl SettingFieldRender for NumberField {
         let state = state_entity.read(cx);
         let selector = format!(
             "setting-number-input-{}-{}-{}",
-            options.page_ix, options.group_ix, options.item_ix
+            options.page_ix(),
+            options.group_ix(),
+            options.item_ix()
         );
 
         div()
@@ -165,8 +169,8 @@ impl SettingFieldRender for NumberField {
             .flex_none()
             .child(
                 NumberInput::new(&state.input)
-                    .disabled(options.disabled)
-                    .with_size(options.size)
+                    .disabled(options.is_disabled())
+                    .with_size(options.size())
                     .w_full()
                     .flex_none()
                     .refine_style(style),

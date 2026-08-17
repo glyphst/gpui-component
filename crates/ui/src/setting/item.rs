@@ -257,14 +257,16 @@ impl SettingItem {
     ) -> Stateful<Div> {
         let selector_suffix = format!(
             "{}-{}-{}",
-            options.page_ix, options.group_ix, options.item_ix
+            options.page_ix(),
+            options.group_ix(),
+            options.item_ix()
         );
         let item_selector = format!("setting-item-{selector_suffix}");
         let label_selector = format!("setting-item-label-{selector_suffix}");
         let field_selector = format!("setting-item-field-{selector_suffix}");
         let description_selector = format!("setting-item-description-{selector_suffix}");
         div()
-            .id(SharedString::from(format!("item-{}", options.item_ix)))
+            .id(SharedString::from(format!("item-{}", options.item_ix())))
             .debug_selector(move || item_selector.clone())
             .w_full()
             .child(match self {
@@ -276,7 +278,7 @@ impl SettingItem {
                     field,
                     ..
                 } => {
-                    let layout = if options.layout.is_vertical() {
+                    let layout = if options.layout().is_vertical() {
                         Axis::Vertical
                     } else {
                         layout
@@ -284,7 +286,6 @@ impl SettingItem {
 
                     v_flex()
                         .w_full()
-                        .overflow_hidden()
                         .when(disabled, |this| this.opacity(0.5))
                         .gap_1()
                         .child(
@@ -332,11 +333,7 @@ impl SettingItem {
                                         })
                                         .child(Self::render_field(
                                             field,
-                                            RenderOptions {
-                                                layout,
-                                                disabled,
-                                                ..*options
-                                            },
+                                            options.with_layout(layout).with_disabled(disabled),
                                             window,
                                             cx,
                                         )),
@@ -359,14 +356,7 @@ impl SettingItem {
                 } => div()
                     .w_full()
                     .when(disabled, |this| this.opacity(0.5))
-                    .child((render)(
-                        &RenderOptions {
-                            disabled,
-                            ..*options
-                        },
-                        window,
-                        cx,
-                    ))
+                    .child((render)(&options.with_disabled(disabled), window, cx))
                     .into_any_element(),
             })
     }
@@ -379,15 +369,9 @@ mod tests {
     use gpui::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
     fn render_options(item_ix: usize, layout: Axis) -> RenderOptions {
-        RenderOptions {
-            page_ix: 0,
-            group_ix: 0,
-            item_ix,
-            size: crate::Size::default(),
-            group_variant: Default::default(),
-            layout,
-            disabled: false,
-        }
+        RenderOptions::new()
+            .with_item_ix(item_ix)
+            .with_layout(layout)
     }
 
     fn draw(cx: &mut VisualTestContext) {

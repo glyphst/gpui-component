@@ -9,6 +9,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
+use crate::ThemeStyled as _;
 use crate::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, Size, StyleSized as _, StyledExt as _,
     actions::{Cancel, Confirm},
@@ -280,6 +281,7 @@ pub struct DatePicker {
     number_of_months: usize,
     presets: Option<Vec<DateRangePreset>>,
     appearance: bool,
+    focus_ring_enabled: bool,
     disabled: bool,
 }
 
@@ -308,6 +310,17 @@ impl Disableable for DatePicker {
     }
 }
 
+impl crate::FocusableExt for DatePicker {
+    fn focus_ring(mut self, enabled: bool) -> Self {
+        self.focus_ring_enabled = enabled;
+        self
+    }
+
+    fn is_focus_ring_enabled(&self) -> bool {
+        self.focus_ring_enabled
+    }
+}
+
 impl Render for DatePickerState {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
         Empty
@@ -324,9 +337,10 @@ impl DatePicker {
             placeholder: None,
             size: Size::default(),
             style: StyleRefinement::default(),
-            number_of_months: 2,
+            number_of_months: 1,
             presets: None,
             appearance: true,
+            focus_ring_enabled: true,
             disabled: false,
         }
     }
@@ -349,7 +363,7 @@ impl DatePicker {
         self
     }
 
-    /// Set number of months to display in the calendar, default is 2.
+    /// Set number of months to display in the calendar, default is 1.
     pub fn number_of_months(mut self, number_of_months: usize) -> Self {
         self.number_of_months = number_of_months;
         self
@@ -418,9 +432,14 @@ impl RenderOnce for DatePicker {
                             .border_1()
                             .border_color(cx.theme().input)
                             .rounded(cx.theme().radius)
-                            .when(is_focused, |this| this.focused_border(cx))
+                            .when(is_focused, |this| {
+                                this.border_1().border_color(cx.theme().ring)
+                            })
                     })
-                    .overflow_hidden()
+                    .when(
+                        is_focused && self.appearance && !self.disabled && self.focus_ring_enabled,
+                        |this| this.focus_ring_style(window, cx),
+                    )
                     .input_text_size(self.size)
                     .input_size(self.size)
                     .when(!state.open && !self.disabled, |this| {
@@ -431,6 +450,7 @@ impl RenderOnce for DatePicker {
                     .child(
                         h_flex()
                             .w_full()
+                            .overflow_hidden()
                             .items_center()
                             .justify_between()
                             .gap_1()
@@ -519,7 +539,7 @@ impl RenderOnce for DatePicker {
                                 ),
                         ),
                     )
-                    .with_priority(2),
+                    .with_priority(gpui_base::POPUP_PRIORITY),
                 )
             })
     }

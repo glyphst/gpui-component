@@ -58,12 +58,14 @@ where
             .unwrap_or_else(|| old_value.clone().into());
         let selector = format!(
             "setting-dropdown-{}-{}-{}",
-            options.page_ix, options.group_ix, options.item_ix
+            options.page_ix(),
+            options.group_ix(),
+            options.item_ix()
         );
 
         Button::new("btn")
             .debug_selector(move || selector.clone())
-            .when(options.layout.is_vertical(), |this| this.w_full())
+            .when(options.layout().is_vertical(), |this| this.w_full())
             .flex_initial()
             .min_w_0()
             .max_w_full()
@@ -71,8 +73,8 @@ where
             .truncate_label()
             .dropdown_caret(true)
             .outline()
-            .disabled(options.disabled)
-            .with_size(options.size)
+            .disabled(options.is_disabled())
+            .with_size(options.size())
             .refine_style(style)
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                 let set_value = set_value.clone();

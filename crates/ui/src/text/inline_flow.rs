@@ -13,7 +13,6 @@ use gpui::{
 };
 
 use crate::{
-    WindowExt as _,
     text::text_view::{LinkClickHandlerFn, handle_link_click},
     tooltip::Tooltip,
 };
@@ -22,6 +21,7 @@ use super::{
     inline::{Inline, InlineState},
     markdown_ext::{MarkdownExtensions, MarkdownNode},
     node::LinkMark,
+    utils::image_source,
 };
 
 const IMAGE_LEN: usize = 1;
@@ -152,7 +152,7 @@ impl InlineFlow {
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     ) -> AnyElement {
-        img(url.clone())
+        img(image_source(url))
             .id(ix)
             .object_fit(ObjectFit::Contain)
             .max_w(relative(1.))
@@ -165,7 +165,7 @@ impl InlineFlow {
                 this.cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                     .on_click(move |event, window, cx| {
-                        window.end_text_selection(cx);
+                        gpui_base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         handle_link_click(
                             &link_click_handler,
@@ -176,7 +176,7 @@ impl InlineFlow {
                         );
                     })
                     .on_aux_click(move |event, window, cx| {
-                        window.end_text_selection(cx);
+                        gpui_base::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         handle_link_click(
                             &aux_link_click_handler,
@@ -321,6 +321,18 @@ impl Element for InlineFlow {
             .unwrap_or_default();
         let mut elements = Vec::with_capacity(fragments.len());
 
+        // A wrapped text item paints through fragment-local Inline states.
+        // Reset the source states once per frame before those fragments merge
+        // their mapped selections back into them.
+        for item in &self.items {
+            if let InlineFlowItem::Text { state, text, .. } = item
+                && let Ok(mut state) = state.lock()
+            {
+                state.set_text(text.clone());
+                state.selection = None;
+            }
+        }
+
         for fragment in fragments {
             match fragment {
                 PositionedFragment::Text {
@@ -333,13 +345,17 @@ impl Element for InlineFlow {
                     highlights,
                     ..
                 } => {
-                    let state = match &self.items[item_ix] {
+                    let (state, selection_target) = match &self.items[item_ix] {
                         InlineFlowItem::Text {
                             state,
                             text: source,
                             ..
-                        } if source_range == (0..source.len()) => state.clone(),
-                        _ => Arc::new(Mutex::new(InlineState::default())),
+                        } if source_range == (0..source.len()) => (state.clone(), None),
+                        InlineFlowItem::Text { state, .. } => (
+                            Arc::new(Mutex::new(InlineState::default())),
+                            Some((state.clone(), source_range.start)),
+                        ),
+                        _ => (Arc::new(Mutex::new(InlineState::default())), None),
                     };
                     if let Ok(mut state) = state.lock() {
                         state.set_text(text);
@@ -349,17 +365,24 @@ impl Element for InlineFlow {
                     // nested StyledText on one line so it cannot wrap again
                     // using a slightly different width and paint outside the
                     // height reserved by this layout.
+                    let inline = Inline::new(
+                        elements.len(),
+                        state,
+                        links,
+                        highlights,
+                        self.link_click_handler.clone(),
+                    )
+                    .when_some(
+                        selection_target,
+                        |this, (target, source_offset)| {
+                            this.selection_target(target, source_offset)
+                        },
+                    );
                     let mut element = div()
                         .w(fragment_size.width)
                         .h(fragment_size.height)
                         .whitespace_nowrap()
-                        .child(Inline::new(
-                            elements.len(),
-                            state,
-                            links,
-                            highlights,
-                            self.link_click_handler.clone(),
-                        ))
+                        .child(inline)
                         .into_any_element();
                     element.prepaint_as_root(
                         bounds.origin + origin,
@@ -745,7 +768,7 @@ fn intrinsic_image_size(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Size<Pixels>> {
-    let mut element = img(url.clone())
+    let mut element = img(image_source(url))
         .id(ix)
         .object_fit(ObjectFit::Contain)
         .max_w(relative(1.))

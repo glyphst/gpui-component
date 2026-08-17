@@ -2,11 +2,11 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext as _, Entity, IntoElement, SharedString, StyleRefinement, Styled,
-    Window,
+    Window, prelude::FluentBuilder as _,
 };
 
 use crate::{
-    Sizable, StyledExt,
+    AxisExt as _, Sizable, StyledExt,
     input::{Input, InputEvent, InputState},
     setting::{
         AnySettingField, RenderOptions,
@@ -50,7 +50,9 @@ where
         let state_entity = window.use_keyed_state(
             SharedString::from(format!(
                 "string-state-{}-{}-{}",
-                options.page_ix, options.group_ix, options.item_ix
+                options.page_ix(),
+                options.group_ix(),
+                options.item_ix()
             )),
             cx,
             {
@@ -87,9 +89,15 @@ where
         let state = state_entity.read(cx);
 
         Input::new(&state.input)
-            .disabled(options.disabled)
-            .with_size(options.size)
-            .w_full()
+            .disabled(options.is_disabled())
+            .with_size(options.size())
+            .map(|this| {
+                if options.layout().is_horizontal() {
+                    this.w_64()
+                } else {
+                    this.w_full()
+                }
+            })
             .min_w_0()
             .refine_style(style)
             .into_any_element()

@@ -1,3 +1,4 @@
+use crate::input::InputState;
 use std::rc::Rc;
 
 use gpui::{
@@ -12,7 +13,7 @@ use smallvec::SmallVec;
 use crate::{
     RoleOverride, StyledExt as _,
     actions::{Cancel, Confirm},
-    input::{InputEvent, InputState},
+    input::InputEvent,
     slider::{SliderEvent, SliderState},
 };
 

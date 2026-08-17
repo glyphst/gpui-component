@@ -1,4 +1,5 @@
 mod components;
+mod syntect_highlighter;
 
 use gpui::{
     App, AppContext as _, Application, Context, InteractiveElement as _, IntoElement,
@@ -8,25 +9,62 @@ use gpui::{
 #[cfg(not(target_family = "wasm"))]
 use gpui::{KeyBinding, WindowBounds};
 use gpui_base::input::InputEditorStyle;
-use gpui_base::input::InputState;
+use gpui_base::input::{EditorState, InputState, TextareaState};
 use gpui_base::slider::SliderState;
 use gpui_base::{
     Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger, AlertDialog,
     AlertDialogAction, AlertDialogBackdrop, AlertDialogCancel, AlertDialogDescription,
-    AlertDialogPopup, AlertDialogTitle, Avatar, AvatarFallback, Button, Calendar, CalendarItemKind,
-    CalendarState, Checkbox, CheckboxIndicator, CheckboxState, Collapsible, ColorPicker,
-    ColorPickerState, ColorSwatch, Combobox, DatePicker, Dialog, DialogBackdrop, DialogDescription,
-    DialogPopup, DialogTitle, HoverCard, Input, OtpState, Popup, Scrollbar, ScrollbarMode, Select,
-    Sheet, Slider, SliderIndicator, SliderThumb, SliderTrack, Switch, SwitchThumb, SwitchTrack,
-    Tab, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Tabs, Toast,
-    ToastTransitionStatus, Toggle, ToggleGroup, Tooltip, Tree, TreeItem, TreeState,
-    VirtualListScrollHandle, v_virtual_list,
+    AlertDialogPopup, AlertDialogTitle, AutoScroll, Avatar, AvatarFallback, Button, Calendar,
+    CalendarItemKind, CalendarState, Checkbox, CheckboxIndicator, CheckboxState, Collapsible,
+    ColorPicker, ColorPickerState, ColorSwatch, Combobox, DatePicker, Dialog, DialogBackdrop,
+    DialogDescription, DialogPopup, DialogTitle, Editor, HoverCard, Input, InputBase, OtpState,
+    Popup, Scrollbar, ScrollbarMode, Select, Sheet, Slider, SliderIndicator, SliderThumb,
+    SliderTrack, Switch, SwitchThumb, SwitchTrack, Tab, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow, Tabs, TextSelectionEvent, TextSelectionHandle, TextSelectionLayer,
+    Textarea, Toast, ToastTransitionStatus, Toggle, ToggleGroup, Tooltip, Tree, TreeItem,
+    TreeState, VirtualListScrollHandle, v_virtual_list,
 };
 #[cfg(target_family = "wasm")]
 use std::borrow::Cow;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
+use syntect_highlighter::{ShowcaseHighlightStyles, SyntectHighlighter};
 
 actions!(base_showcase, [Quit]);
+
+const EDITOR_EXAMPLE: &str = r#"use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+struct Workspace {
+    name: String,
+    files: HashMap<String, usize>,
+}
+
+impl Workspace {
+    fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            files: HashMap::new(),
+        }
+    }
+
+    fn index(&mut self, path: &str, lines: usize) {
+        // Keep the latest line count for each source file.
+        self.files.insert(path.to_owned(), lines);
+    }
+
+    fn summary(&self) -> String {
+        let total: usize = self.files.values().sum();
+        format!("{}: {} files, {total} lines", self.name, self.files.len())
+    }
+}
+
+fn main() {
+    let mut workspace = Workspace::new("gpui-component");
+    workspace.index("src/main.rs", 128);
+    workspace.index("src/editor.rs", 372);
+    println!("{}", workspace.summary());
+}
+"#;
 
 pub const COMPONENTS: &[&str] = &[
     "accordion",
@@ -40,6 +78,7 @@ pub const COMPONENTS: &[&str] = &[
     "combobox",
     "date-picker",
     "dialog",
+    "editor",
     "hover-card",
     "input",
     "link",
@@ -59,6 +98,8 @@ pub const COMPONENTS: &[&str] = &[
     "switch",
     "table",
     "tabs",
+    "text-selection",
+    "textarea",
     "toast",
     "toggle",
     "toggle-group",
@@ -94,7 +135,8 @@ pub struct BaseShowcase {
     page: usize,
     slider: gpui::Entity<SliderState>,
     input: gpui::Entity<InputState>,
-    multiline_input: gpui::Entity<InputState>,
+    textarea: gpui::Entity<TextareaState>,
+    editor: gpui::Entity<EditorState>,
     otp: gpui::Entity<OtpState>,
     calendar: gpui::Entity<CalendarState>,
     tree: gpui::Entity<TreeState>,
@@ -102,6 +144,13 @@ pub struct BaseShowcase {
     scroll: ScrollHandle,
     example_scroll: ScrollHandle,
     virtual_scroll: VirtualListScrollHandle,
+    text_selection_handles: [TextSelectionHandle; 4],
+    text_selection_scroll: ScrollHandle,
+    text_selection_auto_scroll: AutoScroll,
+    text_selection_active: bool,
+    text_selection_text: String,
+    #[cfg(test)]
+    text_selection_footer_bounds: Rc<std::cell::RefCell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl BaseShowcase {
@@ -125,10 +174,13 @@ impl BaseShowcase {
             state
         });
         let otp = cx.new(|cx| OtpState::new(6, window, cx).default_value("12"));
-        let multiline_input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx)
-                .multi_line(true)
-                .default_value("Build focused interfaces.\nKeep behavior composable.");
+        let textarea = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(3)
+                .default_value("Build focused interfaces.\nKeep behavior composable.")
+        });
+        let textarea_base = textarea.clone();
+        textarea_base.update(cx, |state, _| {
             state.set_editor_style(InputEditorStyle {
                 foreground: rgb(0x171717).into(),
                 muted_foreground: rgb(0x737373).into(),
@@ -136,7 +188,32 @@ impl BaseShowcase {
                 caret: rgb(0x171717).into(),
                 ..InputEditorStyle::default()
             });
-            state
+        });
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("rust")
+                .line_number(true)
+                .folding(true)
+                .show_whitespaces(true)
+                .default_value(EDITOR_EXAMPLE)
+        });
+        let editor_base = editor.clone();
+        editor_base.update(cx, |state, cx| {
+            state.set_highlighter_factory(
+                Rc::new(|language| {
+                    SyntectHighlighter::new(language)
+                        .map(|highlighter| Box::new(highlighter) as Box<_>)
+                }),
+                cx,
+            );
+            state.set_editor_style(InputEditorStyle {
+                foreground: rgb(0x171717).into(),
+                muted_foreground: rgb(0x737373).into(),
+                selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
+                caret: rgb(0x171717).into(),
+                highlight_styles: Arc::new(ShowcaseHighlightStyles),
+                ..InputEditorStyle::default()
+            });
         });
         let combobox_query = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("Search frameworks…");
@@ -156,6 +233,10 @@ impl BaseShowcase {
         .detach();
         if matches!(component.as_str(), "input" | "number-input") {
             input.update(cx, |state, cx| state.focus(window, cx));
+        } else if component == "textarea" {
+            textarea.update(cx, |state, cx| state.focus(window, cx));
+        } else if component == "editor" {
+            editor.update(cx, |state, cx| state.focus(window, cx));
         } else if component == "otp-input" {
             otp.update(cx, |state, cx| state.focus(window, cx));
         }
@@ -166,6 +247,38 @@ impl BaseShowcase {
         let color_picker =
             cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(0x2563eb)));
         cx.observe(&color_picker, |_, _, cx| cx.notify()).detach();
+
+        let text_selection_handles = [
+            TextSelectionHandle::new("", cx),
+            TextSelectionHandle::new("", cx),
+            TextSelectionHandle::new("", cx),
+            TextSelectionHandle::new("", cx),
+        ];
+        let text_selection_scroll = ScrollHandle::new();
+        for selection in &text_selection_handles {
+            selection.refresh_window_on_change(window, cx).detach();
+            let view = cx.entity().downgrade();
+            selection
+                .subscribe(
+                    move |event, cx| {
+                        let TextSelectionEvent::AutoScroll(delta) = event else {
+                            return;
+                        };
+                        let delta = *delta;
+                        _ = view.update(cx, |this, cx| {
+                            this.text_selection_auto_scroll
+                                .set(delta, cx, |delta, this, cx| {
+                                    let offset = this.text_selection_scroll.offset();
+                                    this.text_selection_scroll
+                                        .set_offset(gpui::point(offset.x, offset.y - delta));
+                                    cx.notify();
+                                });
+                        });
+                    },
+                    cx,
+                )
+                .detach();
+        }
 
         Self {
             navigation_enabled: component == "overview",
@@ -194,7 +307,8 @@ impl BaseShowcase {
             page: 3,
             slider,
             input,
-            multiline_input,
+            textarea,
+            editor,
             otp,
             calendar: cx.new(|cx| CalendarState::new(window, cx)),
             tree: cx.new(|cx| {
@@ -217,6 +331,13 @@ impl BaseShowcase {
             scroll: ScrollHandle::new(),
             example_scroll: ScrollHandle::new(),
             virtual_scroll: VirtualListScrollHandle::new(),
+            text_selection_handles,
+            text_selection_scroll,
+            text_selection_auto_scroll: AutoScroll::default(),
+            text_selection_active: false,
+            text_selection_text: String::new(),
+            #[cfg(test)]
+            text_selection_footer_bounds: Rc::new(std::cell::RefCell::new(None)),
         }
     }
 
@@ -285,6 +406,7 @@ impl Render for BaseShowcase {
             "combobox" => self.combobox(window, cx).into_any_element(),
             "date-picker" => self.date_picker(cx).into_any_element(),
             "dialog" => self.dialog(cx).into_any_element(),
+            "editor" => self.editor().into_any_element(),
             "hover-card" => self.hover_card().into_any_element(),
             "input" => self.input().into_any_element(),
             "link" => self.link().into_any_element(),
@@ -304,6 +426,8 @@ impl Render for BaseShowcase {
             "switch" => self.switch(cx).into_any_element(),
             "table" => self.table().into_any_element(),
             "tabs" => self.tabs(cx).into_any_element(),
+            "text-selection" => self.text_selection(window, cx).into_any_element(),
+            "textarea" => self.textarea().into_any_element(),
             "toast" => self.toast(cx).into_any_element(),
             "toggle" => self.toggle(cx).into_any_element(),
             "toggle-group" => self.toggle_group(cx).into_any_element(),
@@ -322,6 +446,7 @@ impl Render for BaseShowcase {
             .text_color(rgb(0x171717))
             .text_xs()
             .font_family("Inter Variable")
+            .child(TextSelectionLayer)
             .when(show_back, |this| {
                 this.child(
                     div()
