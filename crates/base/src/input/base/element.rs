@@ -2272,13 +2272,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
         state
             .editor_scrollbar_snapshot
-            .set(Some(EditorScrollbarSnapshot::new(
-                input_bounds,
-                &last_layout,
-                scroll_size,
-                cursor_scroll_offset,
-                state,
-            )));
+            .set(state.is_multi_line().then(|| {
+                EditorScrollbarSnapshot::new(
+                    input_bounds,
+                    &last_layout,
+                    scroll_size,
+                    cursor_scroll_offset,
+                    state,
+                )
+            }));
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
 

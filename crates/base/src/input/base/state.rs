@@ -3488,7 +3488,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                     .pl(self.editor_paddings.left)
             })
             .child(TextElement::new(entity.clone()).placeholder(self.placeholder.clone()))
-            .child(EditorScrollbar::new(entity.clone()));
+            .when(self.is_multi_line(), |this| {
+                this.child(EditorScrollbar::new(entity.clone()))
+            });
 
         // Actions only one mode handles are registered by that mode, where
         // `Self` is concrete enough to name its own entity type.
@@ -5179,6 +5181,41 @@ mod tests {
             assert!(state.is_multi_line());
             assert!(!state.is_single_line());
             assert!(!state.is_code_editor());
+        });
+    }
+
+    /// Single-line inputs scroll their text internally, but must not paint an
+    /// editor scrollbar over the value. Multiline inputs retain the overlay.
+    #[gpui::test]
+    fn test_editor_scrollbar_is_only_rendered_for_multiline_inputs(cx: &mut TestAppContext) {
+        let input = InputView::build(cx, |state| state);
+        let mut input_cx = VisualTestContext::from_window(input.window_handle.into(), cx);
+        input_cx.update(|window, cx| {
+            input.input.update(cx, |state, cx| {
+                state.set_value(
+                    "a single-line value long enough to require internal scrolling",
+                    window,
+                    cx,
+                );
+                state.focus(window, cx);
+            });
+        });
+        input_cx.run_until_parked();
+        input.input.read_with(&mut input_cx, |state, _| {
+            assert!(
+                state.editor_scrollbar_snapshot.get().is_none(),
+                "single-line inputs must not prepare an editor scrollbar"
+            );
+        });
+
+        let textarea = InputView::build_textarea(cx, |state| state);
+        let mut textarea_cx = VisualTestContext::from_window(textarea.window_handle.into(), cx);
+        textarea_cx.run_until_parked();
+        textarea.input.read_with(&mut textarea_cx, |state, _| {
+            assert!(
+                state.editor_scrollbar_snapshot.get().is_some(),
+                "multiline inputs must retain their editor scrollbar"
+            );
         });
     }
 
