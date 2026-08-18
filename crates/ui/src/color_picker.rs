@@ -280,11 +280,11 @@ impl ColorPicker {
                     )
                     .child(
                         div()
-                            .w_10()
+                            .w_16()
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.h * 360.)),
+                            .child(format!("{:.2}", slider_color.h * 360.)),
                     ),
             )
             .child(
@@ -318,11 +318,11 @@ impl ColorPicker {
                     )
                     .child(
                         div()
-                            .w_10()
+                            .w_16()
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.s * 100.)),
+                            .child(format!("{:.2}", slider_color.s * 100.)),
                     ),
             )
             .child(
@@ -352,11 +352,11 @@ impl ColorPicker {
                     )
                     .child(
                         div()
-                            .w_10()
+                            .w_16()
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.l * 100.)),
+                            .child(format!("{:.2}", slider_color.l * 100.)),
                     ),
             )
             .child(
@@ -386,11 +386,11 @@ impl ColorPicker {
                     )
                     .child(
                         div()
-                            .w_10()
+                            .w_16()
                             .text_xs()
                             .text_color(label_color)
                             .text_align(TextAlign::Right)
-                            .child(format!("{:.0}", slider_color.a * 100.)),
+                            .child(format!("{:.2}", slider_color.a * 100.)),
                     ),
             )
     }

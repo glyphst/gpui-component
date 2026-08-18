@@ -366,7 +366,8 @@ impl SettingItem {
 mod tests {
     use super::*;
     use crate::setting::{NumberFieldOptions, SettingField};
-    use gpui::{Context, Render, TestAppContext, VisualTestContext, px, size};
+    use gpui::{Context, Modifiers, Render, TestAppContext, VisualTestContext, point, px, size};
+    use std::cell::Cell;
 
     fn render_options(item_ix: usize, layout: Axis) -> RenderOptions {
         RenderOptions::new()
@@ -467,6 +468,7 @@ mod tests {
                         min: 0.,
                         max: 1000.,
                         step: 1.,
+                        decimal_places: None,
                     },
                     |_| 320.,
                     |_, _| {},
@@ -490,6 +492,39 @@ mod tests {
                         cx,
                     ),
                 )
+        }
+    }
+
+    struct EditableNumberRow {
+        value: Rc<Cell<f64>>,
+    }
+
+    impl Render for EditableNumberRow {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let current_value = self.value.clone();
+            let updated_value = self.value.clone();
+            let view = cx.entity();
+            let field = SettingField::number_input(
+                NumberFieldOptions {
+                    min: 1.01,
+                    max: 4.0,
+                    step: 0.05,
+                    decimal_places: Some(2),
+                },
+                move |_| current_value.get(),
+                move |value, cx| {
+                    updated_value.set(value);
+                    view.update(cx, |_, cx| cx.notify());
+                },
+            );
+
+            div().size_full().child(div().w(px(800.0)).child(
+                SettingItem::new("Zoom step", field).render_item(
+                    &render_options(0, Axis::Horizontal),
+                    window,
+                    cx,
+                ),
+            ))
         }
     }
 
@@ -630,6 +665,62 @@ mod tests {
             assert_eq!(number.size.width, px(128.0));
             assert_eq!(number.right(), field.right());
         }
+    }
+
+    #[gpui::test]
+    fn number_input_preserves_an_incomplete_draft_until_it_becomes_valid(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let value = Rc::new(Cell::new(1.09999));
+        let (_, cx) = cx.add_window_view({
+            let value = value.clone();
+            move |_, _| EditableNumberRow { value }
+        });
+        cx.simulate_resize(size(px(1000.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let number = cx.debug_bounds("setting-number-input-0-0-0").unwrap();
+        cx.simulate_click(number.center(), Modifiers::default());
+        cx.simulate_keystrokes("ctrl-a backspace");
+        cx.simulate_input("1");
+        draw(cx);
+        assert!((value.get() - 1.09999).abs() < f64::EPSILON);
+
+        cx.simulate_input(".1");
+        draw(cx);
+
+        assert!((value.get() - 1.1).abs() < f64::EPSILON);
+    }
+
+    #[gpui::test]
+    fn number_input_buttons_use_the_configured_step(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let value = Rc::new(Cell::new(1.1));
+        let (_, cx) = cx.add_window_view({
+            let value = value.clone();
+            move |_, _| EditableNumberRow { value }
+        });
+        cx.simulate_resize(size(px(1000.0), px(600.0)));
+        let cx: &mut VisualTestContext = cx;
+        draw(cx);
+
+        let number = cx.debug_bounds("setting-number-input-0-0-0").unwrap();
+        cx.simulate_click(
+            point(number.right() - px(4.0), number.center().y),
+            Modifiers::default(),
+        );
+        draw(cx);
+
+        assert!((value.get() - 1.15).abs() < f64::EPSILON);
+
+        let number = cx.debug_bounds("setting-number-input-0-0-0").unwrap();
+        cx.simulate_click(
+            point(number.left() + px(4.0), number.center().y),
+            Modifiers::default(),
+        );
+        draw(cx);
+
+        assert!((value.get() - 1.1).abs() < f64::EPSILON);
     }
 
     #[gpui::test]
