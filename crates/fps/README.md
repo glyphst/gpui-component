@@ -112,6 +112,7 @@ let monitor = cx.new(|cx| {
         .continuous(true)                               // default true, see below
         .show_resources(true)                           // GPU, CPU and memory (default true)
         .resource_interval(Duration::from_millis(500))  // default 500ms
+        .footer(|_, _| div().child("application diagnostics"))
 });
 
 // Embedded:
@@ -119,6 +120,11 @@ div().child(monitor.clone())
 // Or pinned to a corner of a relative parent:
 div().relative().child(FpsOverlay::new(&monitor).anchor(Anchor::BottomLeft))
 ```
+
+An optional `footer` is rendered inside the same card, below the built-in
+readings. It is omitted along with the detailed readings when the HUD is
+collapsed, which lets applications add their own live diagnostics without
+stacking a second overlay.
 
 The palette is not configurable. Its contrast is load bearing — see the note
 below — and an application that could override it could just as easily make the

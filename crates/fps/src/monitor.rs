@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use instant::Instant;
 
 use gpui::{
-    Bounds, Context, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement, PathBuilder,
-    Pixels, Point, Render, StatefulInteractiveElement as _, Styled, Task, Window, canvas, div,
-    point, prelude::FluentBuilder as _, px, relative,
+    AnyElement, App, Bounds, Context, Div, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement, PathBuilder, Pixels, Point, Render, StatefulInteractiveElement as _, Styled,
+    Task, Window, canvas, div, point, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::{
@@ -110,6 +110,7 @@ pub struct FpsMonitor {
     resource_interval: Duration,
     resources: Option<ResourceSample>,
     compact: bool,
+    footer: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>>,
     /// Upper bound of the chart's y axis, in seconds.
     axis_max: f32,
     resource_task: Option<Task<()>>,
@@ -130,6 +131,7 @@ impl FpsMonitor {
             resource_interval: DEFAULT_RESOURCE_INTERVAL,
             resources: None,
             compact: false,
+            footer: None,
             axis_max: frame_budget.as_secs_f32() * 2.,
             resource_task: None,
             _frame_trace: FrameTraceGuard::acquire(),
@@ -179,6 +181,22 @@ impl FpsMonitor {
     /// clamped up to the shortest interval that yields a meaningful CPU delta.
     pub fn resource_interval(mut self, interval: Duration) -> Self {
         self.resource_interval = interval;
+        self
+    }
+
+    /// Adds application-specific diagnostics below the built-in readings.
+    ///
+    /// The footer is rendered only while the HUD is expanded. Clicking any
+    /// part of the combined card collapses both the built-in readings and the
+    /// footer into the compact FPS tag.
+    pub fn footer<F, E>(mut self, footer: F) -> Self
+    where
+        E: IntoElement,
+        F: Fn(&mut Window, &mut App) -> E + 'static,
+    {
+        self.footer = Some(Rc::new(move |window, cx| {
+            footer(window, cx).into_any_element()
+        }));
         self
     }
 
@@ -399,6 +417,7 @@ impl Render for FpsMonitor {
         let fps_color = fps_color(fps, budget, style);
         let resources = self.resources.filter(|_| self.show_resources);
         let compact = self.compact;
+        let footer = self.footer.clone();
 
         div()
             .id("gpui-fps-hud")
@@ -488,6 +507,7 @@ impl Render for FpsMonitor {
                                     )),
                             )
                         })
+                        .when_some(footer, |this, footer| this.child(footer(window, cx)))
                 }
             })
     }
@@ -570,6 +590,7 @@ mod tests {
                     .continuous(false)
                     .show_resources(false)
                     .resource_interval(Duration::from_secs(2))
+                    .footer(|_, _| div().child("custom diagnostics"))
             });
 
             let monitor = monitor.read(cx);
@@ -578,6 +599,7 @@ mod tests {
             assert!(!monitor.continuous);
             assert!(!monitor.show_resources);
             assert_eq!(monitor.resource_interval, Duration::from_secs(2));
+            assert!(monitor.footer.is_some());
             // The axis floor tracks the budget so a 144Hz budget doesn't leave
             // the chart scaled for 60Hz frames.
             assert_eq!(monitor.axis_max, budget.as_secs_f32() * 2.);
