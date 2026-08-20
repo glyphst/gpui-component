@@ -274,6 +274,16 @@ impl CommandState {
         self.matched.len()
     }
 
+    /// Highlight the next matching enabled item, wrapping at the end.
+    pub fn select_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_by(1, window, cx);
+    }
+
+    /// Highlight the previous matching enabled item, wrapping at the start.
+    pub fn select_previous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_by(-1, window, cx);
+    }
+
     /// Move focus to the palette's active control.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         if self.model.searchable {
@@ -538,7 +548,7 @@ impl CommandState {
     }
 
     fn on_action_select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_by(-1, window, cx);
+        self.select_previous(window, cx);
     }
 
     fn on_action_select_down(
@@ -547,7 +557,7 @@ impl CommandState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_by(1, window, cx);
+        self.select_next(window, cx);
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
