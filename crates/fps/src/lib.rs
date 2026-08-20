@@ -1,5 +1,5 @@
 //! A realtime performance HUD for GPUI applications: frames per second, a
-//! rolling frame time chart, and this process' CPU and memory usage.
+//! rolling frame time chart, and this process' GPU, CPU and memory usage.
 //!
 //! Frame data comes from GPUI's own frame trace
 //! ([`gpui::FrameTimingCollector`]), so the numbers are what the framework
@@ -30,6 +30,8 @@
 //! This crate depends only on `gpui`, so it can be used from any GPUI
 //! application.
 
+#[cfg(not(target_family = "wasm"))]
+mod gpu;
 mod monitor;
 mod overlay;
 mod sampler;
@@ -111,7 +113,7 @@ static TRACE_STATE: Mutex<TraceState> = Mutex::new(TraceState {
 
 /// Keeps GPUI's frame trace enabled for as long as it is alive.
 ///
-/// [`gpui::set_frame_trace_enabled`] is a process-wide switch, and turning it
+/// [`gpui::profiler::set_trace_enabled`] is a process-wide switch, and turning it
 /// off clears the recorded buffer. A monitor therefore must not disable it
 /// while another monitor — or the host application's own profiling — still
 /// depends on it, so guards are reference counted and the switch is only
@@ -128,7 +130,7 @@ impl FrameTraceGuard {
             if state.refs == 0 {
                 // Returns false when the value was already `true`, which means
                 // somebody else turned tracing on and owns restoring it.
-                state.owned_by_host = !gpui::set_frame_trace_enabled(true);
+                state.owned_by_host = !gpui::profiler::set_trace_enabled(true);
             }
             state.refs += 1;
         }
@@ -141,7 +143,7 @@ impl Drop for FrameTraceGuard {
         if let Ok(mut state) = TRACE_STATE.lock() {
             state.refs = state.refs.saturating_sub(1);
             if state.refs == 0 && !state.owned_by_host {
-                gpui::set_frame_trace_enabled(false);
+                gpui::profiler::set_trace_enabled(false);
             }
         }
     }
@@ -155,15 +157,15 @@ mod tests {
     fn nested_guards_keep_tracing_on_until_the_last_one_drops() {
         let outer = FrameTraceGuard::acquire();
         let inner = FrameTraceGuard::acquire();
-        assert!(gpui::frame_trace_enabled());
+        assert!(gpui::profiler::trace_enabled());
 
         drop(inner);
         assert!(
-            gpui::frame_trace_enabled(),
+            gpui::profiler::trace_enabled(),
             "the outer guard still needs the trace"
         );
 
         drop(outer);
-        assert!(!gpui::frame_trace_enabled());
+        assert!(!gpui::profiler::trace_enabled());
     }
 }

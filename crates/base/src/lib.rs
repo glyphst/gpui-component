@@ -97,7 +97,7 @@ pub use focus_trap::FocusTrapElement;
 #[doc(hidden)]
 pub use focus_trap::active_focus_trap;
 pub use geometry::*;
-pub use global_state::GlobalState;
+pub use global_state::{DeferredPopover, GlobalState};
 pub use history::{History, HistoryItem};
 pub use hover_card::{HoverCard, HoverCardState};
 pub use index_path::IndexPath;
@@ -130,8 +130,8 @@ pub use resizable::{
     resizable_panel, v_resizable,
 };
 pub use scrollbar::{
-    Scrollbar, ScrollbarAxis, ScrollbarHandle, ScrollbarMode, ScrollbarStyles, ScrollbarThumbStyle,
-    ScrollbarTrackStyle,
+    Scrollbar, ScrollbarAxis, ScrollbarEntrance, ScrollbarHandle, ScrollbarMode, ScrollbarMotion,
+    ScrollbarStyles, ScrollbarThumbStyle, ScrollbarTrackStyle,
 };
 pub use select::Select;
 pub use sheet::Sheet;

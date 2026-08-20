@@ -5,7 +5,7 @@ use chrono::{Datelike, Local, NaiveDate, Weekday};
 use gpui::{
     AnyElement, App, Context, ElementId, Empty, Entity, EventEmitter, FocusHandle,
     InteractiveElement, IntoElement, ParentElement, Render, RenderOnce, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, px,
 };
 
 /// A controlled calendar value.
@@ -150,6 +150,14 @@ impl CalendarView {
     }
     pub fn is_year(self) -> bool {
         self == Self::Year
+    }
+}
+
+fn picker_grid_layout(view: CalendarView) -> Option<(u16, f32)> {
+    match view {
+        CalendarView::Day => None,
+        CalendarView::Month => Some((3, 4.)),
+        CalendarView::Year => Some((5, 4.)),
     }
 }
 
@@ -701,21 +709,23 @@ impl RenderOnce for Calendar {
             (self.item)(item, st, window, cx)
         });
 
-        let mut body = if view.is_day() {
-            v_flex()
-        } else {
-            h_flex().flex_wrap()
+        let mut body = match picker_grid_layout(view) {
+            None => h_flex().justify_around(),
+            Some((columns, horizontal_gap)) => {
+                div().grid().grid_cols(columns).gap_x(px(horizontal_gap))
+            }
         };
         if view.is_day() {
             for offset in 0..count {
                 let (year, month_number) = self.state.read(cx).offset_year_month(offset);
                 let weeks = days_in_month(year, month_number, self.first_day_of_week);
-                let mut month = h_flex().flex_wrap();
+                let mut month = v_flex();
+                let mut header_row = h_flex();
                 for weekday in 0..7 {
                     let st = CalendarItemState::new(CalendarItemKind::Weekday)
                         .muted(true)
                         .disabled(true);
-                    month = month.child(self.render_item(
+                    header_row = header_row.child(self.render_item(
                         format!("weekday-{offset}-{weekday}"),
                         st,
                         (weekday + self.first_day_of_week.num_days_from_sunday() as i32) % 7,
@@ -723,30 +733,37 @@ impl RenderOnce for Calendar {
                         cx,
                     ));
                 }
-                for date in weeks.iter().flatten() {
-                    let date = *date;
-                    let st = {
-                        let s = self.state.read(cx);
-                        let (_, m) = s.offset_year_month(offset);
-                        let disabled = s.disabled_matcher_ref().is_some_and(|x| x.matched(&date));
-                        CalendarItemState::new(CalendarItemKind::Day)
-                            .active(s.date().is_active(&date))
-                            .in_range(s.date().is_in_range(&date))
-                            .muted(date.month() != m || disabled)
-                            .disabled(disabled)
-                            .today(date == s.today())
-                    };
-                    let mut item = CalendarItem::new(format!("calendar-{date}-{offset}"), st)
-                        .child((self.label)(st.kind(), date.day() as i32));
-                    if !st.is_disabled() {
-                        let entity = self.state.clone();
-                        item = item.on_click(move |_, _, cx| {
-                            entity.update(cx, |s, cx| {
-                                s.activate_date(date, cx);
-                            })
-                        });
+                month = month.child(header_row);
+                for (week_index, week) in weeks.iter().enumerate() {
+                    let mut week_row = h_flex();
+                    for date in week {
+                        let date = *date;
+                        let st = {
+                            let s = self.state.read(cx);
+                            let (_, m) = s.offset_year_month(offset);
+                            let disabled =
+                                s.disabled_matcher_ref().is_some_and(|x| x.matched(&date));
+                            CalendarItemState::new(CalendarItemKind::Day)
+                                .active(s.date().is_active(&date))
+                                .in_range(s.date().is_in_range(&date))
+                                .muted(date.month() != m || disabled)
+                                .disabled(disabled)
+                                .today(date == s.today())
+                        };
+                        let mut item =
+                            CalendarItem::new(format!("calendar-{date}-{offset}-{week_index}"), st)
+                                .child((self.label)(st.kind(), date.day() as i32));
+                        if !st.is_disabled() {
+                            let entity = self.state.clone();
+                            item = item.on_click(move |_, _, cx| {
+                                entity.update(cx, |s, cx| {
+                                    s.activate_date(date, cx);
+                                })
+                            });
+                        }
+                        week_row = week_row.child((self.item)(item, st, window, cx));
                     }
-                    month = month.child((self.item)(item, st, window, cx));
+                    month = month.child(week_row);
                 }
                 body = body.child(month);
             }
@@ -935,6 +952,13 @@ mod tests {
             s.select_year(2032);
             assert_eq!((s.view(), s.current_year()), (CalendarView::Day, 2032));
         });
+    }
+
+    #[test]
+    fn picker_views_use_stable_grid_layouts() {
+        assert_eq!(picker_grid_layout(CalendarView::Month), Some((3, 4.)));
+        assert_eq!(picker_grid_layout(CalendarView::Year), Some((5, 4.)));
+        assert_eq!(picker_grid_layout(CalendarView::Day), None);
     }
 
     #[gpui::test]

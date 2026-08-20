@@ -2,7 +2,7 @@ use crate::{
     highlighter::HighlightTheme, list::ListSettings, notification::NotificationSettings,
     scroll::ScrollbarMode, sheet::SheetSettings,
 };
-use gpui::{App, Global, Hsla, Pixels, SharedString, Window, WindowAppearance, px};
+use gpui::{App, Global, Hsla, IsZero as _, Pixels, SharedString, Window, WindowAppearance, px};
 pub use gpui_base::{
     ColorTokens, RadiusTokens, SemanticThemeTokens, ShadowTokens, SpacingTokens, TextStyleToken,
     TypographyTokens,
@@ -13,6 +13,7 @@ use std::{
     ops::{Deref, DerefMut},
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 
 mod color;
@@ -46,6 +47,37 @@ impl ActiveTheme for App {
 
 fn default_true() -> bool {
     true
+}
+
+/// The radius that rounds a shape as far as its own size allows, giving a
+/// circle or a pill. Any value past half the shorter side is clamped by the
+/// renderer, so this is simply "as round as it goes".
+const RADIUS_FULL: Pixels = px(9999.);
+
+/// How long the scrollbar stays visible after the last scroll, drag, or hover.
+const SCROLLBAR_IDLE: Duration = Duration::from_secs(2);
+/// How long the scrollbar takes to appear.
+const SCROLLBAR_ENTER: Duration = Duration::from_millis(300);
+/// How long the scrollbar takes to fade away once the idle hold expires.
+const SCROLLBAR_EXIT: Duration = Duration::from_millis(500);
+/// How long the thumb takes to reach its hovered or resting width.
+const SCROLLBAR_EXPAND: Duration = Duration::from_millis(300);
+
+/// The scrollbar motion this design system projects onto Base.
+///
+/// Scrolling and track hover reveal a scrollbar by fading it in place. In hover
+/// mode, pointing at the thumb slides it in from the nearest edge as it fades.
+fn scrollbar_motion(mode: ScrollbarMode) -> gpui_base::ScrollbarMotion {
+    gpui_base::ScrollbarMotion::default()
+        .with_idle(SCROLLBAR_IDLE)
+        .with_enter(SCROLLBAR_ENTER)
+        .with_exit(SCROLLBAR_EXIT)
+        .with_expand(SCROLLBAR_EXPAND)
+        .with_entrance(gpui_base::ScrollbarEntrance::Fade)
+        .with_thumb_hover_entrance(match mode {
+            ScrollbarMode::Scrolling | ScrollbarMode::Always => gpui_base::ScrollbarEntrance::Fade,
+            ScrollbarMode::Hover => gpui_base::ScrollbarEntrance::SlideAndFade,
+        })
 }
 
 /// The global theme configuration.
@@ -139,6 +171,10 @@ impl Theme {
     }
 
     /// Returns the global theme mutable reference
+    ///
+    /// Changes to fields the Base layer mirrors — the radius, the colors, the
+    /// fonts — reach the scrollbar and resize handles only once
+    /// [`Theme::sync_base`] runs.
     #[inline(always)]
     pub fn global_mut(cx: &mut App) -> &mut Theme {
         cx.global_mut::<Theme>()
@@ -184,7 +220,12 @@ impl Theme {
     /// Changes the scrollbar display mode and synchronizes the Base projection.
     pub fn set_scrollbar_mode(mode: ScrollbarMode, cx: &mut App) {
         Theme::global_mut(cx).scrollbar_mode = mode;
-        gpui_base::Theme::global_mut(cx).scrollbar.mode = mode;
+        let base_theme = gpui_base::Theme::global_mut(cx);
+        base_theme.scrollbar = base_theme
+            .scrollbar
+            .clone()
+            .with_mode(mode)
+            .with_motion(scrollbar_motion(mode));
     }
 
     /// Change the theme mode.
@@ -205,36 +246,67 @@ impl Theme {
             theme.apply_config(&theme.light_theme.clone());
         }
 
-        let base_theme = gpui_base::Theme {
-            tokens: theme.semantic_tokens(),
-            scrollbar: gpui_base::ScrollbarTheme {
-                mode: theme.scrollbar_mode,
-                styles: gpui_base::ScrollbarStyles::default()
-                    .track(|style| style.bg(theme.scrollbar))
-                    .track_hover(|style| style.bg(theme.scrollbar))
-                    .track_active(|style| style.bg(theme.scrollbar).border_color(theme.border))
-                    .thumb(|style| style.bg(theme.tokens.scrollbar_thumb).radius(theme.radius))
-                    .thumb_hover(|style| {
-                        style
-                            .bg(theme.tokens.scrollbar_thumb_hover)
-                            .radius(theme.radius)
-                    })
-                    .thumb_active(|style| {
-                        style
-                            .bg(theme.tokens.scrollbar_thumb_hover)
-                            .radius(theme.radius)
-                    }),
-            },
-            resizable: gpui_base::ResizableTheme {
-                handle: theme.border,
-                active_handle: theme.drag_border,
-            },
-        };
+        let base_theme = theme.base_theme();
         cx.set_global(base_theme);
 
         if let Some(window) = window {
             window.refresh();
         }
+    }
+
+    /// This theme projected onto the Base layer, which owns the scrollbar and
+    /// resize handles and reads the semantic tokens.
+    fn base_theme(&self) -> gpui_base::Theme {
+        gpui_base::Theme {
+            tokens: self.semantic_tokens(),
+            scrollbar: gpui_base::ScrollbarTheme::new()
+                .with_mode(self.scrollbar_mode)
+                .with_motion(scrollbar_motion(self.scrollbar_mode))
+                .with_styles(
+                    gpui_base::ScrollbarStyles::default()
+                        .track(|style| style.bg(self.scrollbar))
+                        .track_hover(|style| style.bg(self.scrollbar))
+                        .track_active(|style| style.bg(self.scrollbar).border_color(self.border))
+                        .thumb(|style| style.bg(self.tokens.scrollbar_thumb).radius(self.radius))
+                        .thumb_hover(|style| {
+                            style
+                                .bg(self.tokens.scrollbar_thumb_hover)
+                                .radius(self.radius)
+                        })
+                        .thumb_active(|style| {
+                            style
+                                .bg(self.tokens.scrollbar_thumb_hover)
+                                .radius(self.radius)
+                        }),
+                ),
+            resizable: gpui_base::ResizableTheme {
+                handle: self.border,
+                active_handle: self.drag_border,
+            },
+        }
+    }
+
+    /// Push the current theme down to the Base layer.
+    ///
+    /// The Base layer holds its own copy of the theme — the semantic tokens
+    /// plus the scrollbar and resize-handle styles — because it paints those
+    /// without going through `gpui-component`. [`Theme::change`] refreshes that
+    /// copy, but writing to the theme's public fields directly does not, so a
+    /// scrollbar keeps painting with the radius and colors it was last given.
+    ///
+    /// Call this after mutating the theme through [`Theme::global_mut`]:
+    ///
+    /// ```ignore
+    /// Theme::global_mut(cx).radius = px(0.);
+    /// Theme::sync_base(cx);
+    /// ```
+    ///
+    /// It rebuilds the Base theme from scratch, so any style written straight
+    /// onto the Base global is replaced — the same thing [`Theme::change`]
+    /// does.
+    pub fn sync_base(cx: &mut App) {
+        let base_theme = Theme::global(cx).base_theme();
+        cx.set_global(base_theme);
     }
 
     /// Get the input background color.
@@ -294,6 +366,22 @@ impl Theme {
         }
     }
 
+    /// The radius of a shape that reads as a circle or a pill — an avatar, a
+    /// slider thumb, a badge dot, a pill tab.
+    ///
+    /// A theme whose [`Theme::radius`] is zero squares these off too, so one
+    /// setting governs the whole UI instead of leaving a handful of
+    /// permanently round elements behind. Use it in place of
+    /// [`gpui::Styled::rounded_full`], or reach for
+    /// [`crate::ThemeStyled::rounded_full_style`] when styling an element.
+    pub fn radius_full(&self) -> Pixels {
+        if self.radius.is_zero() {
+            px(0.)
+        } else {
+            RADIUS_FULL
+        }
+    }
+
     pub fn radius_tokens(&self) -> RadiusTokens {
         RadiusTokens {
             none: px(0.),
@@ -301,7 +389,7 @@ impl Theme {
             md: self.radius,
             lg: self.radius_lg,
             xl: self.radius * 2.,
-            full: px(9999.),
+            full: RADIUS_FULL,
         }
     }
 
@@ -396,9 +484,9 @@ impl Theme {
 
 #[cfg(test)]
 mod semantic_token_tests {
-    use gpui::{Hsla, px};
+    use gpui::{Hsla, IsZero as _, px};
 
-    use super::Theme;
+    use super::{RADIUS_FULL, Theme};
 
     #[test]
     fn semantic_colors_are_a_live_projection_of_legacy_fields() {
@@ -426,6 +514,29 @@ mod semantic_token_tests {
         assert_eq!(theme.danger, tokens.colors.destructive);
         assert_eq!(theme.radius, px(10.));
         assert_eq!(theme.button_primary, component_color);
+    }
+
+    #[test]
+    fn square_themes_square_off_pills_and_circles() {
+        let mut theme = Theme::default();
+        assert_eq!(theme.radius_full(), RADIUS_FULL);
+        assert_eq!(theme.radius_tokens().full, RADIUS_FULL);
+
+        // An application asking for square corners gets them everywhere, not
+        // just on the elements whose radius happens to come from `radius`.
+        theme.radius = px(0.);
+        assert_eq!(theme.radius_full(), px(0.));
+    }
+
+    #[test]
+    fn base_projection_carries_a_square_radius_to_the_scrollbar() {
+        let mut theme = Theme::default();
+        assert!(!theme.base_theme().tokens.radius.md.is_zero());
+
+        // The scrollbar paints from the Base layer's copy of the theme, so a
+        // square theme has to reach it or the thumb stays a pill.
+        theme.radius = px(0.);
+        assert!(theme.base_theme().tokens.radius.md.is_zero());
     }
 
     #[test]
@@ -538,8 +649,42 @@ mod base_theme_projection_tests {
             Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
             assert_eq!(Theme::global(cx).scrollbar_mode, ScrollbarMode::Always);
             assert_eq!(
-                gpui_base::Theme::global(cx).scrollbar.mode,
+                gpui_base::Theme::global(cx).scrollbar.mode(),
                 gpui_base::ScrollbarMode::Always
+            );
+            assert_styled_projection(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn scrollbar_motion_is_owned_here_and_projected_onto_base(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+
+            // Base itself ships none of this timing.
+            let bare = gpui_base::ScrollbarMotion::default();
+            assert_eq!(bare.enter(), Duration::ZERO);
+            assert_eq!(bare.exit(), Duration::ZERO);
+            assert_eq!(bare.expand(), Duration::ZERO);
+
+            Theme::set_scrollbar_mode(ScrollbarMode::Scrolling, cx);
+            let motion = gpui_base::Theme::global(cx).scrollbar.motion();
+            assert_eq!(motion.idle(), SCROLLBAR_IDLE);
+            assert_eq!(motion.enter(), SCROLLBAR_ENTER);
+            assert_eq!(motion.exit(), SCROLLBAR_EXIT);
+            assert_eq!(motion.expand(), SCROLLBAR_EXPAND);
+            assert_eq!(
+                motion.entrance(),
+                gpui_base::ScrollbarEntrance::Fade,
+                "scroll-revealed scrollbars fade in without sliding"
+            );
+
+            Theme::set_scrollbar_mode(ScrollbarMode::Hover, cx);
+            let motion = gpui_base::Theme::global(cx).scrollbar.motion();
+            assert_eq!(motion.entrance(), gpui_base::ScrollbarEntrance::Fade);
+            assert_eq!(
+                motion.thumb_hover_entrance(),
+                gpui_base::ScrollbarEntrance::SlideAndFade
             );
         });
     }
@@ -549,7 +694,11 @@ mod base_theme_projection_tests {
         let base = gpui_base::Theme::global(cx);
 
         assert_eq!(base.tokens, theme.semantic_tokens());
-        assert_eq!(base.scrollbar.mode, theme.scrollbar_mode);
+        assert_eq!(base.scrollbar.mode(), theme.scrollbar_mode);
+        assert_eq!(
+            base.scrollbar.motion(),
+            scrollbar_motion(theme.scrollbar_mode)
+        );
         assert_eq!(base.resizable.handle, theme.border);
         assert_eq!(base.resizable.active_handle, theme.drag_border);
     }

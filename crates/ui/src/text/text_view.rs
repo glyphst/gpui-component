@@ -11,7 +11,7 @@ use crate::StyledExt;
 use crate::scroll::ScrollableElement;
 use crate::text::TextViewFormat;
 use crate::text::markdown_ext::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
-use crate::text::node::CodeBlock;
+use crate::text::node::{CodeBlock, TableData};
 use crate::text::state::{SelectionFormat, TextViewState};
 use crate::{global_state::UiGlobalState, text::TextViewStyle};
 
@@ -31,6 +31,10 @@ pub struct TextViewContextMenuRequest {
 }
 
 pub(crate) type ContextMenuFn = dyn Fn(TextViewContextMenuRequest, &mut Window, &mut App) + 'static;
+
+/// Type for the table actions generator function.
+pub(crate) type TableActionsFn =
+    dyn Fn(&TableData, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
 pub(crate) type LinkClickHandlerFn =
     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
@@ -84,6 +88,7 @@ pub struct TextView {
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     on_context_menu: Option<Rc<ContextMenuFn>>,
+    table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -126,6 +131,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             on_context_menu: None,
+            table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
         }
@@ -145,6 +151,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             on_context_menu: None,
+            table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
         }
@@ -164,6 +171,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             on_context_menu: None,
+            table_actions: None,
             link_click_handler: None,
             markdown_extensions: Arc::default(),
         }
@@ -231,6 +239,21 @@ impl TextView {
         callback: impl Fn(TextViewContextMenuRequest, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_context_menu = Some(Rc::new(callback));
+        self
+    }
+
+    /// Set custom actions to be rendered below each Markdown table.
+    ///
+    /// The closure receives the [`TableData`],
+    /// and returns an element to display.
+    pub fn table_actions<F, E>(mut self, f: F) -> Self
+    where
+        F: Fn(&TableData, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.table_actions = Some(Arc::new(move |table, window, cx| {
+            f(table, window, cx).into_any_element()
+        }));
         self
     }
 
@@ -396,6 +419,7 @@ impl Element for TextView {
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
             state.on_context_menu = self.on_context_menu.clone();
+            state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
@@ -498,11 +522,12 @@ impl Element for TextView {
 #[cfg(test)]
 mod tests {
     use super::{TextView, TextViewContextMenuRequest, TextViewPlugin};
-    use crate::text::TextViewState;
+    use crate::text::{TableData, TextViewState, TextViewStyle};
     use gpui::{
-        AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Render,
-        SharedString, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px,
+        AppContext as _, Bounds, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
+        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Overflow, ParentElement as _, Pixels,
+        Render, SharedString, StyleRefinement, Styled as _, TestAppContext, VisualTestContext,
+        Window, div, point, px,
     };
     use std::{cell::RefCell, rc::Rc};
 
@@ -979,6 +1004,95 @@ mod tests {
             top_level_action.right() - nested_action.right() < px(32.),
             "nested code block should fill the list item's available width"
         );
+    }
+
+    /// Draw a Markdown table with a `table_actions` hook installed, and return
+    /// the painted bounds of the actions element plus the data it received.
+    /// `scroll` opts into the horizontally scrollable table layout.
+    fn draw_table_with_actions(
+        cx: &mut TestAppContext,
+        scroll: bool,
+    ) -> (Bounds<Pixels>, TableData) {
+        use std::sync::{Arc, Mutex};
+
+        struct TableRoot {
+            scroll: bool,
+            captured: Arc<Mutex<Vec<TableData>>>,
+        }
+
+        impl Render for TableRoot {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                let captured = self.captured.clone();
+                let mut table_style = StyleRefinement::default();
+                if self.scroll {
+                    table_style.overflow.x = Some(Overflow::Scroll);
+                }
+
+                div().w(px(320.)).child(
+                    TextView::markdown(
+                        "table-actions",
+                        "| Name | Age |\n|:--|--:|\n| Alice | 30 |\n| Bob | 41 |",
+                    )
+                    .style(TextViewStyle::default().table(table_style))
+                    .table_actions(move |table, _, _| {
+                        if let Ok(mut captured) = captured.lock() {
+                            captured.push(table.clone());
+                        }
+                        div().debug_selector(|| "table-action".into()).child("Copy")
+                    }),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (_, cx) = cx.add_window_view({
+            let captured = captured.clone();
+            move |_, _| TableRoot { scroll, captured }
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let bounds = cx
+            .debug_bounds("table-action")
+            .expect("table actions should be painted");
+        let data = captured
+            .lock()
+            .expect("captured table data")
+            .last()
+            .cloned()
+            .expect("table actions hook should receive the table");
+
+        (bounds, data)
+    }
+
+    #[gpui::test]
+    fn table_actions_render_below_the_table(cx: &mut TestAppContext) {
+        for scroll in [false, true] {
+            let (bounds, data) = draw_table_with_actions(cx, scroll);
+
+            // Header plus two data rows are painted above the actions row.
+            assert!(
+                bounds.top() > px(40.),
+                "actions should sit below the table (scroll: {scroll}), got {:?}",
+                bounds.top()
+            );
+            assert_eq!(data.headers, vec!["Name", "Age"]);
+            assert_eq!(data.rows, vec![vec!["Alice", "30"], vec!["Bob", "41"]]);
+            assert_eq!(
+                data.markdown,
+                "| Name | Age |\n| :-- | --: |\n| Alice | 30 |\n| Bob | 41 |"
+            );
+            assert_eq!(data.span, Some(0..52));
+        }
     }
 
     #[test]

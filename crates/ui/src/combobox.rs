@@ -2,7 +2,7 @@ use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, Length,
     MouseDownEvent, ParentElement, Pixels, Render, RenderOnce, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, anchored, deferred, div,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, deferred, div,
     prelude::FluentBuilder, px, rems,
 };
 
@@ -527,12 +527,7 @@ where
 
     fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.state.open = open;
-
-        if self.state.open {
-            GlobalState::register_deferred_popover(&self.state.focus_handle, cx)
-        } else {
-            GlobalState::unregister_deferred_popover(&self.state.focus_handle, cx)
-        }
+        self.state.deferred_context = open.then(|| GlobalState::register_deferred_popover(cx));
 
         cx.notify();
     }
@@ -661,52 +656,52 @@ where
                 None
             };
 
-        let prepaint_handler: Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static> = {
-            let state = cx.entity();
-            Box::new(move |bounds, _, cx| state.update(cx, |r, _| r.state.bounds = bounds))
-        };
-
         let footer_el = self.footer.as_ref().map(|f| f(window, cx));
 
         let dismiss_handler: Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static> =
             Box::new(cx.listener(Self::dismiss));
 
-        div()
-            .size_full()
-            .relative()
-            .child(render_trigger_container(
-                disabled,
-                self.state.appearance,
-                self.focus_ring_enabled,
-                self.state.size,
-                &self.state.style,
-                bg,
-                fg,
-                outline_visible,
-                allow_open,
-                trigger_body,
-                trailing,
-                toggle_handler,
-                prepaint_handler,
-                window,
-                cx,
-            ))
-            .when(self.state.open, |this| {
-                this.child(
-                    deferred(render_popup_shell(
-                        &self.state.list,
-                        self.state.menu_width,
-                        self.state.search_placeholder.clone(),
-                        self.state.size,
-                        self.state.menu_max_h,
-                        bounds,
-                        footer_el,
-                        dismiss_handler,
-                        cx,
-                    ))
-                    .with_priority(gpui_base::POPUP_PRIORITY),
-                )
-            })
+        div().size_full().relative().child(
+            div()
+                .relative()
+                .on_prepaint({
+                    let state = cx.entity();
+                    move |bounds, _, cx| state.update(cx, |r, _| r.state.bounds = bounds)
+                })
+                .child(render_trigger_container(
+                    disabled,
+                    self.state.appearance,
+                    self.focus_ring_enabled,
+                    self.state.size,
+                    &self.state.style,
+                    bg,
+                    fg,
+                    outline_visible,
+                    allow_open,
+                    trigger_body,
+                    trailing,
+                    toggle_handler,
+                    window,
+                    cx,
+                ))
+                .when(self.state.open, |this| {
+                    this.child(
+                        deferred(render_popup_shell(
+                            ("combobox-popup", cx.entity_id()),
+                            &self.state.list,
+                            self.state.menu_width,
+                            self.state.search_placeholder.clone(),
+                            self.state.size,
+                            self.state.menu_max_h,
+                            bounds,
+                            footer_el,
+                            dismiss_handler,
+                            cx,
+                        ))
+                        .with_priority(gpui_base::POPUP_PRIORITY),
+                    )
+                }),
+        )
     }
 }
 
@@ -972,7 +967,6 @@ fn render_trigger_container(
     trigger_body: AnyElement,
     trailing: AnyElement,
     toggle_handler: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
-    prepaint_handler: Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static>,
     window: &Window,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -1015,12 +1009,12 @@ fn render_trigger_container(
                 .child(trigger_body)
                 .child(trailing),
         )
-        .on_prepaint(prepaint_handler)
 }
 
 /// Renders the deferred anchored popup shell containing the searchable list and optional footer.
 #[allow(clippy::too_many_arguments)]
 fn render_popup_shell<D: SearchableListDelegate + 'static>(
+    id: impl Into<ElementId>,
     list: &Entity<ListState<SearchableListAdapter<D>>>,
     menu_width: Length,
     search_placeholder: Option<SharedString>,
@@ -1032,48 +1026,39 @@ fn render_popup_shell<D: SearchableListDelegate + 'static>(
     cx: &mut App,
 ) -> AnyElement {
     let has_footer = footer_el.is_some();
-    let popup_radius = cx.theme().radius.min(px(8.));
 
-    anchored()
-        .snap_to_window_with_margin(px(8.))
-        .child(
-            div()
-                .occlude()
-                .map(|this| match menu_width {
-                    Length::Auto => this.w(bounds.size.width + px(2.)),
-                    Length::Definite(w) => this.w(w),
-                })
-                .child(
-                    v_flex()
-                        .occlude()
-                        .mt_1p5()
-                        .bg(cx.theme().tokens.popover)
-                        .border_1()
+    crate::popover::dropdown_popup(
+        id,
+        bounds,
+        v_flex()
+            .occlude()
+            .map(|this| match menu_width {
+                Length::Auto => this.w(bounds.size.width + px(2.)),
+                Length::Definite(w) => this.w(w),
+            })
+            .popover_style(cx)
+            .child(
+                List::new(list)
+                    .when_some(search_placeholder, |this, placeholder| {
+                        this.search_placeholder(placeholder)
+                    })
+                    .with_size(size)
+                    .max_h(menu_max_h)
+                    .paddings(Edges::all(px(4.))),
+            )
+            .when(has_footer, |this| {
+                this.child(
+                    div()
+                        .border_t_1()
                         .border_color(cx.theme().border)
-                        .rounded(popup_radius)
-                        .shadow_md()
-                        .child(
-                            List::new(list)
-                                .when_some(search_placeholder, |this, placeholder| {
-                                    this.search_placeholder(placeholder)
-                                })
-                                .with_size(size)
-                                .max_h(menu_max_h)
-                                .paddings(Edges::all(px(4.))),
-                        )
-                        .when(has_footer, |this| {
-                            this.child(
-                                div()
-                                    .border_t_1()
-                                    .border_color(cx.theme().border)
-                                    .p_1()
-                                    .when_some(footer_el, |this, el| this.child(el)),
-                            )
-                        }),
+                        .p_1()
+                        .when_some(footer_el, |this, el| this.child(el)),
                 )
-                .on_mouse_down_out(dismiss_handler),
-        )
-        .into_any_element()
+            })
+            .on_mouse_down_out(dismiss_handler),
+        cx,
+    )
+    .into_any_element()
 }
 
 // MARK: Tests

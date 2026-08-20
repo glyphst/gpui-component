@@ -7,7 +7,7 @@ use gpui::{
     Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 
-use crate::{GlobalState, Popup, Selectable, actions::Cancel};
+use crate::{DeferredPopover, GlobalState, Popup, Selectable, actions::Cancel};
 
 const CONTEXT: &str = "Popover";
 
@@ -34,6 +34,9 @@ pub struct PopoverState {
     exit_task: Option<Task<()>>,
     on_open_change: Option<OpenChangeHandler>,
     dismiss_subscription: Option<Subscription>,
+    /// Held while open, so that a state collected without being closed — this
+    /// lives in element state — takes its registration with it.
+    deferred_context: Option<DeferredPopover>,
 }
 
 impl PopoverState {
@@ -50,6 +53,7 @@ impl PopoverState {
             exit_task: None,
             on_open_change: None,
             dismiss_subscription: None,
+            deferred_context: default_open.then(|| GlobalState::register_deferred_popover(cx)),
         }
     }
 
@@ -95,9 +99,9 @@ impl PopoverState {
             self.cancel_exit();
             self.present = true;
             self.closing = false;
-            GlobalState::register_deferred_popover(&self.focus_handle, cx);
+            self.deferred_context = Some(GlobalState::register_deferred_popover(cx));
         } else {
-            GlobalState::unregister_deferred_popover(&self.focus_handle, cx);
+            self.deferred_context = None;
             self.begin_exit(cx);
         }
     }
@@ -430,6 +434,24 @@ mod tests {
     use super::*;
     use gpui::{AppContext as _, Context, Render, point, px};
     use std::{cell::RefCell, rc::Rc};
+
+    /// Popover state lives in element state, which is collected as soon as it
+    /// stops being rendered — a trigger scrolled out of a virtual list, a panel
+    /// closed with its menu open. A registration that outlived it would leave
+    /// the application believing a popup is open for the rest of the session.
+    #[gpui::test]
+    fn a_state_dropped_while_open_closes_the_deferred_context(cx: &mut gpui::TestAppContext) {
+        let state = cx.update(|cx| {
+            GlobalState::init(cx);
+            let state = cx.new(|cx| PopoverState::new(false, cx));
+            state.update(cx, |state, cx| state.set_open(true, cx));
+            assert!(GlobalState::is_in_deferred_context(cx));
+            state
+        });
+
+        cx.update(|_| drop(state));
+        cx.update(|cx| assert!(!GlobalState::is_in_deferred_context(cx)));
+    }
 
     #[gpui::test]
     fn open_state_registers_and_unregisters_deferred_context(cx: &mut gpui::TestAppContext) {
