@@ -110,6 +110,7 @@ pub struct FpsMonitor {
     resource_interval: Duration,
     resources: Option<ResourceSample>,
     compact: bool,
+    width: Pixels,
     footer: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>>,
     /// Upper bound of the chart's y axis, in seconds.
     axis_max: f32,
@@ -131,6 +132,7 @@ impl FpsMonitor {
             resource_interval: DEFAULT_RESOURCE_INTERVAL,
             resources: None,
             compact: false,
+            width: HUD_WIDTH,
             footer: None,
             axis_max: frame_budget.as_secs_f32() * 2.,
             resource_task: None,
@@ -181,6 +183,14 @@ impl FpsMonitor {
     /// clamped up to the shortest interval that yields a meaningful CPU delta.
     pub fn resource_interval(mut self, interval: Duration) -> Self {
         self.resource_interval = interval;
+        self
+    }
+
+    /// Sets the expanded HUD width. Defaults to 172 pixels.
+    ///
+    /// The compact FPS tag continues to size itself to its contents.
+    pub fn width(mut self, width: Pixels) -> Self {
+        self.width = width;
         self
     }
 
@@ -417,6 +427,7 @@ impl Render for FpsMonitor {
         let fps_color = fps_color(fps, budget, style);
         let resources = self.resources.filter(|_| self.show_resources);
         let compact = self.compact;
+        let width = self.width;
         let footer = self.footer.clone();
 
         div()
@@ -451,7 +462,7 @@ impl Render for FpsMonitor {
                         .child("FPS")
                 } else {
                     this.flex_col()
-                        .w(HUD_WIDTH)
+                        .w(width)
                         .px_2()
                         .py_1p5()
                         .rounded(px(4.))
@@ -590,6 +601,7 @@ mod tests {
                     .continuous(false)
                     .show_resources(false)
                     .resource_interval(Duration::from_secs(2))
+                    .width(px(320.))
                     .footer(|_, _| div().child("custom diagnostics"))
             });
 
@@ -599,6 +611,7 @@ mod tests {
             assert!(!monitor.continuous);
             assert!(!monitor.show_resources);
             assert_eq!(monitor.resource_interval, Duration::from_secs(2));
+            assert_eq!(monitor.width, px(320.));
             assert!(monitor.footer.is_some());
             // The axis floor tracks the budget so a 144Hz budget doesn't leave
             // the chart scaled for 60Hz frames.
