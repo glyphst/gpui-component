@@ -6,6 +6,20 @@ use instant::Instant;
 /// Frames older than this stop contributing to the FPS readout.
 const FPS_WINDOW: Duration = Duration::from_secs(1);
 
+fn nearest_rank_p95<T: Copy + Ord>(values: impl Iterator<Item = T>) -> Option<T> {
+    let mut ordered = values.collect::<Vec<_>>();
+    if ordered.is_empty() {
+        return None;
+    }
+    ordered.sort_unstable();
+    let index = ordered
+        .len()
+        .saturating_mul(95)
+        .div_ceil(100)
+        .saturating_sub(1);
+    ordered.get(index).copied()
+}
+
 /// One drawn frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameSample {
@@ -105,6 +119,16 @@ impl FrameSampler {
         }
         let total: Duration = self.samples.iter().map(|sample| sample.draw).sum();
         total / self.samples.len() as u32
+    }
+
+    /// Nearest-rank 95th percentile draw time across the retained frames.
+    pub(crate) fn p95_draw(&self) -> Duration {
+        nearest_rank_p95(self.samples.iter().map(|sample| sample.draw)).unwrap_or_default()
+    }
+
+    /// Nearest-rank 95th percentile invalidation count across retained frames.
+    pub(crate) fn p95_invalidations(&self) -> u64 {
+        nearest_rank_p95(self.samples.iter().map(|sample| sample.invalidations)).unwrap_or_default()
     }
 
     /// The slowest retained frame, used to scale the chart's y axis.
@@ -236,11 +260,19 @@ mod tests {
     // `std::time::Instant` off the web, so tests can build one without pulling
     // in the `scheduler` crate.
     fn timing(window_id: WindowId, draw: Duration) -> FrameTiming {
+        timing_with_invalidations(window_id, draw, 1)
+    }
+
+    fn timing_with_invalidations(
+        window_id: WindowId,
+        draw: Duration,
+        invalidations: u64,
+    ) -> FrameTiming {
         let start = std::time::Instant::now();
         FrameTiming {
             window_id,
             dirty_at: None,
-            invalidations: 1,
+            invalidations,
             draw_start: start,
             draw_end: start + draw,
         }
@@ -281,6 +313,27 @@ mod tests {
             draws,
             vec![Duration::from_millis(6), Duration::from_millis(7)]
         );
+    }
+
+    #[test]
+    fn reports_nearest_rank_p95_draw_and_invalidation_pressure() {
+        let window_id = WindowId::from(1);
+        let mut sampler = FrameSampler::new(window_id, 20);
+        let now = Instant::now();
+
+        for value in 1..=20 {
+            sampler.ingest(
+                vec![timing_with_invalidations(
+                    window_id,
+                    Duration::from_millis(value),
+                    value,
+                )],
+                now,
+            );
+        }
+
+        assert_eq!(sampler.p95_draw(), Duration::from_millis(19));
+        assert_eq!(sampler.p95_invalidations(), 19);
     }
 
     /// Feeds `count` frames spaced `interval` apart and returns the resulting

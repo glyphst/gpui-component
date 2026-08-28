@@ -96,6 +96,8 @@ const DEFAULT_FONT: &str = "monospace";
 struct Readout {
     fps: f32,
     frame_millis: f32,
+    frame_p95_millis: f32,
+    invalidations_p95: u64,
     dropped_percent: f32,
 }
 
@@ -274,6 +276,8 @@ impl FpsMonitor {
             // The mean over the interval rather than the latest frame, which
             // at this cadence would be an arbitrary sample.
             frame_millis: self.sampler.mean_draw().as_secs_f32() * 1000.,
+            frame_p95_millis: self.sampler.p95_draw().as_secs_f32() * 1000.,
+            invalidations_p95: self.sampler.p95_invalidations(),
             dropped_percent: self.sampler.over_budget_ratio(self.frame_budget) * 100.,
         };
         self.readout_at = Some(now);
@@ -422,6 +426,8 @@ impl Render for FpsMonitor {
         let Readout {
             fps,
             frame_millis,
+            frame_p95_millis,
+            invalidations_p95,
             dropped_percent: dropped,
         } = self.readout;
         let fps_color = fps_color(fps, budget, style);
@@ -468,7 +474,7 @@ impl Render for FpsMonitor {
                         .rounded(px(4.))
                         .child(self.render_headline(fps, fps_color))
                         .child(reading(
-                            "FRAME",
+                            "FRAME AVG",
                             format!("{frame_millis:.1} ms"),
                             // Graded against the budget, not against the frame
                             // rate. An idle window draws a handful of frames a
@@ -476,6 +482,18 @@ impl Render for FpsMonitor {
                             // of those frames was in fact drawn well inside the
                             // budget; this row is what says so.
                             style.level_color(frame_millis / 1000., budget.as_secs_f32()),
+                            style,
+                        ))
+                        .child(reading(
+                            "FRAME P95",
+                            format!("{frame_p95_millis:.1} ms"),
+                            style.level_color(frame_p95_millis / 1000., budget.as_secs_f32()),
+                            style,
+                        ))
+                        .child(reading(
+                            "INVALIDATE P95",
+                            invalidations_p95.to_string(),
+                            style.level_color(if invalidations_p95 > 1 { 1. } else { 0. }, 0.5),
                             style,
                         ))
                         .child(reading(
