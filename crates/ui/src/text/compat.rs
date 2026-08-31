@@ -6,7 +6,7 @@ use gpui::{
 
 use super::{
     MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat,
-    TableData, TextViewState, TextViewStyle,
+    TableData, TextViewContextMenuRequest, TextViewState, TextViewStyle,
 };
 use gpui_base::text::CodeBlock;
 
@@ -105,6 +105,15 @@ impl TextView {
         F: Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.inner = self.inner.on_link_click(f);
+        self
+    }
+    /// Handles a right-click with the selected text and link under the
+    /// pointer, allowing applications to construct their own menu.
+    pub fn on_context_menu<F>(mut self, f: F) -> Self
+    where
+        F: Fn(TextViewContextMenuRequest, &mut Window, &mut App) + 'static,
+    {
+        self.inner = self.inner.on_context_menu(f);
         self
     }
     /// Sets which Markdown extensions the parser accepts.
