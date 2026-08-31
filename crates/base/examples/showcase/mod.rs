@@ -1,13 +1,23 @@
 mod components;
+// Components and Motion are standalone example apps. The WASM host embeds
+// both, so each deliberately instantiates its own thread-local active palette.
+#[allow(clippy::duplicate_mod)]
+#[path = "../shared/palette.rs"]
+mod palette;
 mod syntect_highlighter;
 
 use gpui::{
     App, AppContext as _, Application, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _, Window,
-    WindowOptions, actions, div, prelude::FluentBuilder as _, px, rgb, size,
+    WindowOptions, actions, div, prelude::FluentBuilder as _, px, size,
 };
 #[cfg(not(target_family = "wasm"))]
 use gpui::{KeyBinding, WindowBounds};
+use gpui_base::ResizeHandleContext;
+use gpui_base::dock::{
+    DockArea, DockAreaRenderer, DockContext, DockLayout, DockPlacement, DropIndicator, NodeId,
+    Panel, PanelEvent, PanelView, TabGroupContext, TabGroupRenderer, TileContext, TilesRenderer,
+};
 use gpui_base::input::InputEditorStyle;
 use gpui_base::input::{EditorState, InputState, TextareaState};
 use gpui_base::slider::SliderState;
@@ -21,9 +31,10 @@ use gpui_base::{
     Popup, Scrollbar, ScrollbarMode, Select, Sheet, Slider, SliderIndicator, SliderThumb,
     SliderTrack, Switch, SwitchThumb, SwitchTrack, Tab, Table, TableBody, TableCell, TableHead,
     TableHeader, TableRow, Tabs, TextSelectionEvent, TextSelectionHandle, TextSelectionLayer,
-    Textarea, Toast, ToastTransitionStatus, Toggle, ToggleGroup, Tooltip, Tree, TreeItem,
-    TreeState, VirtualListScrollHandle, v_virtual_list,
+    TextViewState, Textarea, Toast, ToastTransitionStatus, Toggle, ToggleGroup, Tooltip, Tree,
+    TreeItem, TreeState, VirtualListScrollHandle, v_virtual_list,
 };
+use palette::{activate as activate_palette, canvas as example_canvas, example_rgb};
 #[cfg(target_family = "wasm")]
 use std::borrow::Cow;
 use std::{rc::Rc, sync::Arc};
@@ -78,6 +89,7 @@ pub const COMPONENTS: &[&str] = &[
     "combobox",
     "date-picker",
     "dialog",
+    "dock",
     "editor",
     "hover-card",
     "input",
@@ -99,6 +111,7 @@ pub const COMPONENTS: &[&str] = &[
     "table",
     "tabs",
     "text-selection",
+    "text-view",
     "textarea",
     "toast",
     "toggle",
@@ -144,17 +157,20 @@ pub struct BaseShowcase {
     scroll: ScrollHandle,
     example_scroll: ScrollHandle,
     virtual_scroll: VirtualListScrollHandle,
+    dock: gpui::Entity<DockArea>,
     text_selection_handles: [TextSelectionHandle; 4],
     text_selection_scroll: ScrollHandle,
     text_selection_auto_scroll: AutoScroll,
     text_selection_active: bool,
     text_selection_text: String,
+    text_view: gpui::Entity<TextViewState>,
     #[cfg(test)]
     text_selection_footer_bounds: Rc<std::cell::RefCell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl BaseShowcase {
     pub fn new(component: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        activate_palette(window, cx);
         let component = component.into();
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx)
@@ -165,10 +181,10 @@ impl BaseShowcase {
                     "Hello GPUI"
                 });
             state.set_editor_style(InputEditorStyle {
-                foreground: rgb(0x171717).into(),
-                muted_foreground: rgb(0x737373).into(),
+                foreground: example_rgb(0x171717).into(),
+                muted_foreground: example_rgb(0x737373).into(),
                 selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
-                caret: rgb(0x171717).into(),
+                caret: example_rgb(0x171717).into(),
                 ..InputEditorStyle::default()
             });
             state
@@ -182,10 +198,10 @@ impl BaseShowcase {
         let textarea_base = textarea.clone();
         textarea_base.update(cx, |state, _| {
             state.set_editor_style(InputEditorStyle {
-                foreground: rgb(0x171717).into(),
-                muted_foreground: rgb(0x737373).into(),
+                foreground: example_rgb(0x171717).into(),
+                muted_foreground: example_rgb(0x737373).into(),
                 selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
-                caret: rgb(0x171717).into(),
+                caret: example_rgb(0x171717).into(),
                 ..InputEditorStyle::default()
             });
         });
@@ -207,10 +223,10 @@ impl BaseShowcase {
                 cx,
             );
             state.set_editor_style(InputEditorStyle {
-                foreground: rgb(0x171717).into(),
-                muted_foreground: rgb(0x737373).into(),
+                foreground: example_rgb(0x171717).into(),
+                muted_foreground: example_rgb(0x737373).into(),
                 selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
-                caret: rgb(0x171717).into(),
+                caret: example_rgb(0x171717).into(),
                 highlight_styles: Arc::new(ShowcaseHighlightStyles),
                 ..InputEditorStyle::default()
             });
@@ -218,10 +234,10 @@ impl BaseShowcase {
         let combobox_query = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("Search frameworks…");
             state.set_editor_style(InputEditorStyle {
-                foreground: rgb(0x171717).into(),
-                muted_foreground: rgb(0x737373).into(),
+                foreground: example_rgb(0x171717).into(),
+                muted_foreground: example_rgb(0x737373).into(),
                 selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
-                caret: rgb(0x171717).into(),
+                caret: example_rgb(0x171717).into(),
                 ..InputEditorStyle::default()
             });
             state
@@ -245,7 +261,7 @@ impl BaseShowcase {
         cx.observe(&slider, |_, _, cx| cx.notify()).detach();
 
         let color_picker =
-            cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(0x2563eb)));
+            cx.new(|cx| ColorPickerState::new(window, cx).default_value(example_rgb(0x2563eb)));
         cx.observe(&color_picker, |_, _, cx| cx.notify()).detach();
 
         let text_selection_handles = [
@@ -280,7 +296,7 @@ impl BaseShowcase {
                 .detach();
         }
 
-        Self {
+        let this = Self {
             navigation_enabled: component == "overview",
             component,
             checkbox_checked: true,
@@ -331,14 +347,45 @@ impl BaseShowcase {
             scroll: ScrollHandle::new(),
             example_scroll: ScrollHandle::new(),
             virtual_scroll: VirtualListScrollHandle::new(),
+            dock: components::build_dock(window, cx),
             text_selection_handles,
             text_selection_scroll,
             text_selection_auto_scroll: AutoScroll::default(),
             text_selection_active: false,
             text_selection_text: String::new(),
+            text_view: cx.new(|cx| TextViewState::markdown(components::TEXT_VIEW_MARKDOWN, cx)),
             #[cfg(test)]
             text_selection_footer_bounds: Rc::new(std::cell::RefCell::new(None)),
-        }
+        };
+        cx.observe_window_appearance(window, |this, window, cx| {
+            activate_palette(window, cx);
+            this.refresh_editor_styles(cx);
+            cx.notify();
+        })
+        .detach();
+        this
+    }
+
+    fn refresh_editor_styles(&self, cx: &mut Context<Self>) {
+        let style = || InputEditorStyle {
+            foreground: example_rgb(0x171717).into(),
+            muted_foreground: example_rgb(0x737373).into(),
+            selection: gpui::hsla(0.6, 0.8, 0.7, 0.45),
+            caret: example_rgb(0x171717).into(),
+            ..InputEditorStyle::default()
+        };
+        self.input
+            .update(cx, |state, _| state.set_editor_style(style()));
+        self.textarea
+            .update(cx, |state, _| state.set_editor_style(style()));
+        self.combobox_query
+            .update(cx, |state, _| state.set_editor_style(style()));
+        self.editor.update(cx, |state, _| {
+            state.set_editor_style(InputEditorStyle {
+                highlight_styles: Arc::new(ShowcaseHighlightStyles),
+                ..style()
+            });
+        });
     }
 
     fn overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -363,7 +410,7 @@ impl BaseShowcase {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0x737373))
+                            .text_color(example_rgb(0x737373))
                             .child("Choose a component to open its interactive example."),
                     ),
             )
@@ -377,8 +424,8 @@ impl BaseShowcase {
                         .items_center()
                         .justify_start()
                         .border_1()
-                        .border_color(rgb(0xd4d4d4))
-                        .bg(rgb(0xffffff))
+                        .border_color(example_rgb(0xd4d4d4))
+                        .bg(example_rgb(0xffffff))
                         .text_xs()
                         .child(*name)
                         .on_click(move |_, _, cx| {
@@ -394,6 +441,7 @@ impl BaseShowcase {
 
 impl Render for BaseShowcase {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        activate_palette(window, cx);
         let content = match self.component.as_str() {
             "accordion" => self.accordion(cx).into_any_element(),
             "alert-dialog" => self.alert_dialog(cx).into_any_element(),
@@ -427,23 +475,28 @@ impl Render for BaseShowcase {
             "table" => self.table().into_any_element(),
             "tabs" => self.tabs(cx).into_any_element(),
             "text-selection" => self.text_selection(window, cx).into_any_element(),
+            "text-view" => self.text_view(window).into_any_element(),
             "textarea" => self.textarea().into_any_element(),
             "toast" => self.toast(cx).into_any_element(),
             "toggle" => self.toggle(cx).into_any_element(),
             "toggle-group" => self.toggle_group(cx).into_any_element(),
             "tooltip" => self.tooltip(cx).into_any_element(),
             "tree" => self.tree().into_any_element(),
+            "dock" => self.dock(cx).into_any_element(),
             "virtual-list" => self.virtual_list(cx).into_any_element(),
             _ => self.overview(cx).into_any_element(),
         };
         let show_back = self.navigation_enabled && self.component != "overview";
+        // Surfaces rather than parts: these take the whole viewport.
+        let fills_viewport = matches!(self.component.as_str(), "dock");
+        let is_text_view = self.component == "text-view";
         let entity = cx.entity().downgrade();
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0xffffff))
-            .text_color(rgb(0x171717))
+            .bg(example_canvas())
+            .text_color(example_rgb(0x171717))
             .text_xs()
             .font_family("Inter Variable")
             .child(TextSelectionLayer)
@@ -456,7 +509,7 @@ impl Render for BaseShowcase {
                         .flex()
                         .items_center()
                         .border_b_1()
-                        .border_color(rgb(0xe5e5e5))
+                        .border_color(example_rgb(0xe5e5e5))
                         .child(
                             Button::new("back-to-overview")
                                 .h_7()
@@ -465,7 +518,7 @@ impl Render for BaseShowcase {
                                 .items_center()
                                 .justify_center()
                                 .border_1()
-                                .border_color(rgb(0x171717))
+                                .border_color(example_rgb(0x171717))
                                 .child("All components")
                                 .on_click(move |_, _, cx| {
                                     _ = entity.update(cx, |this, cx| {
@@ -488,10 +541,22 @@ impl Render for BaseShowcase {
                             .min_h_full()
                             .w_full()
                             .flex()
-                            .items_center()
-                            .justify_center()
+                            // Most examples are small parts, centered in the
+                            // viewport. A few are whole surfaces that have to
+                            // fill it instead: centering them inside a
+                            // `flex_none` box leaves a percentage size with
+                            // nothing to resolve against, and it collapses.
+                            .when(!fills_viewport, |this| this.items_center().justify_center())
                             .p_4()
-                            .child(div().flex_none().child(content)),
+                            .child(
+                                div()
+                                    .map(|this| match (fills_viewport, is_text_view) {
+                                        (true, _) => this.flex_1().size_full().min_h(px(420.)),
+                                        (false, true) => this.flex_1().w_full().max_w(px(720.)),
+                                        (false, false) => this.flex_none(),
+                                    })
+                                    .child(content),
+                            ),
                     ),
             )
     }
@@ -550,6 +615,7 @@ pub fn run_embedded(app: Application, component: impl Into<String>) -> gpui::App
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[allow(dead_code)]
 pub fn run_native(component: &str) {
     run(gpui_platform::application(), component.to_owned());
 }

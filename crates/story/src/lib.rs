@@ -10,7 +10,10 @@ use gpui_component::{
     TITLE_BAR_HEIGHT, TitleBar, WindowExt,
     button::Button,
     command::{Command, CommandEntry, CommandState},
-    dock::{Panel, PanelControl, PanelEvent, PanelInfo, PanelState, TitleStyle, register_panel},
+    dock::{
+        BasePanel, Panel, PanelControl, PanelEvent, PanelInfo, PanelState, TitleStyle,
+        panel_handle, register_panel,
+    },
     group_box::{GroupBox, GroupBoxVariants as _},
     h_flex,
     menu::PopupMenu,
@@ -70,7 +73,8 @@ actions!(
         TabPrev,
         ShowPanelInfo,
         ToggleListActiveHighlight,
-        ToggleFpsMonitor
+        ToggleFpsMonitor,
+        ToggleAppMenuBar
     ]
 );
 
@@ -81,6 +85,12 @@ pub struct AppState {
     /// Whether the window root renders the performance HUD. Toggled from the
     /// title bar's settings menu, read by [`StoryRoot`].
     pub show_fps_monitor: bool,
+    /// Whether the title bar draws the in-window [`AppMenuBar`] instead of the
+    /// window title. Toggled from the title bar's settings menu, read by
+    /// [`AppTitleBar`].
+    ///
+    /// [`AppMenuBar`]: gpui_component::menu::AppMenuBar
+    pub show_app_menu_bar: bool,
     pub(crate) previewing_theme: bool,
 }
 impl AppState {
@@ -88,6 +98,10 @@ impl AppState {
         let state = Self {
             invisible_panels: cx.new(|_| Vec::new()),
             show_fps_monitor: false,
+            // macOS draws the app menus in the system menu bar, so an in-window
+            // menu bar would be a second copy of them. Off by default there,
+            // but still switchable so the component stays demoable on a Mac.
+            show_app_menu_bar: !cfg!(target_os = "macos"),
             previewing_theme: false,
         };
         cx.set_global::<AppState>(state);
@@ -139,7 +153,7 @@ pub fn create_new_window_with_size<F, E>(
             inactive_frame_interval: Some(Duration::from_millis(500)),
             kind: WindowKind::Normal,
             #[cfg(target_os = "linux")]
-            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            window_background: story_window_background(),
             #[cfg(target_os = "linux")]
             window_decorations: Some(gpui::WindowDecorations::Client),
             ..TitleBar::window_options()
@@ -170,6 +184,14 @@ pub fn create_new_window_with_size<F, E>(
         Ok::<_, anyhow::Error>(())
     })
     .detach();
+}
+
+#[cfg(target_os = "linux")]
+fn story_window_background() -> gpui::WindowBackgroundAppearance {
+    // The component gallery is a normal application window. Advertising an
+    // alpha surface lets compositors show the desktop through light themes,
+    // even though every story is designed against an opaque canvas.
+    gpui::WindowBackgroundAppearance::Opaque
 }
 
 impl Global for AppState {}
@@ -255,10 +277,10 @@ pub fn init(cx: &mut App) {
         }
     });
 
-    register_panel(cx, PANEL_NAME, |_, _, info, window, cx| {
-        let story_state = match info {
+    register_panel(cx, PANEL_NAME, |context, window, cx| {
+        let story_state = match context.info() {
             PanelInfo::Panel(value) => StoryState::from_value(value.clone()),
-            _ => {
+            info => {
                 unreachable!("Invalid PanelInfo: {:?}", info)
             }
         };
@@ -285,7 +307,7 @@ pub fn init(cx: &mut App) {
             container.zoomable = zoomable;
             container
         });
-        Box::new(view)
+        panel_handle(view)
     });
 
     cx.activate(true);
@@ -362,6 +384,8 @@ impl RenderOnce for StorySection {
                     .gap_4()
                     .child(
                         v_flex()
+                            .min_w_0()
+                            .flex_1()
                             .gap_1()
                             .child(div().font_medium().child(self.title))
                             .when_some(self.description, |this, description| {
@@ -699,7 +723,9 @@ impl StoryState {
         }
 
         match self.story_klass.to_string().as_str() {
+            "AttachmentStory" => story!(AttachmentStory),
             "BreadcrumbStory" => story!(BreadcrumbStory),
+            "BubbleStory" => story!(BubbleStory),
             "ButtonStory" => story!(ButtonStory),
             "CalendarStory" => story!(CalendarStory),
             "SelectStory" => story!(SelectStory),
@@ -707,8 +733,12 @@ impl StoryState {
             "ImageStory" => story!(ImageStory),
             "InputStory" => story!(InputStory),
             "ListStory" => story!(ListStory),
+            "MarkerStory" => story!(MarkerStory),
+            "MessageStory" => story!(MessageStory),
+            "MessageScrollerStory" => story!(MessageScrollerStory),
             "DialogStory" => story!(DialogStory),
             "SeparatorStory" => story!(SeparatorStory),
+            "ShimmerStory" => story!(ShimmerStory),
             "PopoverStory" => story!(PopoverStory),
             "ProgressStory" => story!(ProgressStory),
             "ResizableStory" => story!(ResizableStory),
@@ -730,32 +760,19 @@ impl StoryState {
     }
 }
 
-impl Panel for StoryContainer {
+impl BasePanel for StoryContainer {
     fn panel_name(&self) -> &'static str {
         "StoryContainer"
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.name.clone().into_any_element()
-    }
-
-    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
-        if let Some(bg) = self.title_bg {
-            Some(TitleStyle {
-                background: bg,
-                foreground: cx.theme().foreground,
-            })
-        } else {
-            None
-        }
     }
 
     fn closable(&self, _cx: &App) -> bool {
         self.closable
     }
 
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        self.zoomable
+    /// The presentation half decides *where* the control appears; this decides
+    /// whether zooming is possible at all.
+    fn zoomable(&self, _cx: &App) -> bool {
+        self.zoomable.is_some()
     }
 
     fn visible(&self, cx: &App) -> bool {
@@ -776,6 +793,36 @@ impl Panel for StoryContainer {
                 on_active(story, active, _window, cx);
             }
         }
+    }
+
+    fn dump(&self, _cx: &App) -> PanelState {
+        let mut state = PanelState::new(self.panel_name());
+        let story_state = StoryState {
+            story_klass: self.story_klass.clone().unwrap(),
+        };
+        state.info = PanelInfo::panel(story_state.to_value());
+        state
+    }
+}
+
+impl Panel for StoryContainer {
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.name.clone().into_any_element()
+    }
+
+    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+        if let Some(bg) = self.title_bg {
+            Some(TitleStyle {
+                background: bg,
+                foreground: cx.theme().foreground,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn zoom_control(&self, _cx: &App) -> Option<PanelControl> {
+        self.zoomable
     }
 
     fn dropdown_menu(
@@ -804,15 +851,6 @@ impl Panel for StoryContainer {
                     window.push_notification("You have clicked search button", cx);
                 }),
         ])
-    }
-
-    fn dump(&self, _cx: &App) -> PanelState {
-        let mut state = PanelState::new(self);
-        let story_state = StoryState {
-            story_klass: self.story_klass.clone().unwrap(),
-        };
-        state.info = PanelInfo::panel(story_state.to_value());
-        state
     }
 }
 
@@ -1199,6 +1237,15 @@ impl Render for StoryRoot {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn component_story_window_is_opaque() {
+        assert_eq!(
+            super::story_window_background(),
+            gpui::WindowBackgroundAppearance::Opaque
+        );
+    }
+
     #[test]
     fn extends_component_translations_with_story_locales() {
         rust_i18n::extend!(gpui_component);

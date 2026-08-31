@@ -476,9 +476,9 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("runtime-popover-content").is_none());
-        // Preserve the existing event ordering: the trigger wrapper and the
-        // popup's mouse-down-out path can both close the uncontrolled popover.
-        assert_eq!(&*changes.borrow(), &[true, false, false]);
+        // The trigger wrapper and popup host may both request dismissal, but
+        // the change callback reports the state transition only once.
+        assert_eq!(&*changes.borrow(), &[true, false]);
     }
 
     #[gpui::test]
@@ -534,6 +534,9 @@ mod tests {
         cx.simulate_click(point(px(300.), px(300.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("runtime-popover-content").is_none());
+        // A change callback reports state transitions, not redundant dismissal
+        // requests. The base host may see both paths, but only the first closes.
+        assert_eq!(&*changes.borrow(), &[true, false]);
     }
 
     struct DefaultOpenHarness;

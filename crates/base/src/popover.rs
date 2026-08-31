@@ -7,12 +7,19 @@ use gpui::{
     Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 
-use crate::{DeferredPopover, GlobalState, Popup, Selectable, actions::Cancel};
+use crate::{
+    DeferredPopover, GlobalState, Popup, Selectable,
+    actions::{Cancel, Confirm},
+};
 
 const CONTEXT: &str = "Popover";
 
 pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", Cancel, Some(CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("escape", Cancel, Some(CONTEXT)),
+        KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
+        KeyBinding::new("space", Confirm { secondary: false }, Some(CONTEXT)),
+    ]);
 }
 
 type OpenChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
@@ -148,8 +155,25 @@ impl PopoverState {
     }
 
     #[doc(hidden)]
+    pub fn sync_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.transition_to(open, false, window, cx);
+    }
+
+    #[doc(hidden)]
     pub fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let opening = !self.open;
+        self.transition_to(!self.open, true, window, cx);
+    }
+
+    fn transition_to(
+        &mut self,
+        opening: bool,
+        announce: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open == opening {
+            return;
+        }
         if opening {
             self.previous_focus_handle = window.focused(cx);
         }
@@ -178,8 +202,8 @@ impl PopoverState {
             }
         }
 
-        if let Some(callback) = self.on_open_change.as_ref() {
-            callback(&self.open, window, cx);
+        if announce && let Some(callback) = self.on_open_change.as_ref() {
+            callback(&opening, window, cx);
         }
         cx.notify();
     }
@@ -348,7 +372,7 @@ impl RenderOnce for Popover {
             state.set_on_open_change(self.on_open_change);
             state.set_exit_duration(self.exit_duration, cx);
             if let Some(open) = self.open {
-                state.set_open(open, cx);
+                state.sync_open(open, window, cx);
             }
         });
 
@@ -373,13 +397,22 @@ impl RenderOnce for Popover {
                 style.flex_shrink = trigger_style.flex_shrink;
                 this
             })
+            .key_context(CONTEXT)
+            .on_action({
+                let state = state.clone();
+                move |_: &Confirm, window, cx| {
+                    state.update(cx, |state, cx| state.toggle_open(window, cx));
+                    cx.notify(parent_view_id);
+                }
+            })
             .on_mouse_down(self.mouse_button, {
                 let state = state.clone();
                 move |_, window, cx| {
                     cx.stop_propagation();
                     state.update(cx, |state, cx| {
-                        state.set_open(open, cx);
-                        state.toggle_open(window, cx);
+                        if state.is_open() == open {
+                            state.toggle_open(window, cx);
+                        }
                     });
                     cx.notify(parent_view_id);
                 }
@@ -540,6 +573,26 @@ mod tests {
         default_open: bool,
     }
 
+    struct KeyboardPopoverHarness {
+        trigger_focus: FocusHandle,
+    }
+
+    impl Render for KeyboardPopoverHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Popover::new("keyboard-popover")
+                .trigger(
+                    crate::Button::new("keyboard-trigger")
+                        .track_focus(&self.trigger_focus)
+                        .child("Open"),
+                )
+                .content(|_, _, _| {
+                    div()
+                        .debug_selector(|| "keyboard-popover-content".into())
+                        .size(px(40.))
+                })
+        }
+    }
+
     impl Render for PopoverHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             let changes = self.changes.clone();
@@ -575,7 +628,7 @@ mod tests {
         cx.simulate_click(point(px(300.), px(300.)), Default::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("base-popover-content").is_none());
-        assert_eq!(&*changes.borrow(), &[true, false, false]);
+        assert_eq!(&*changes.borrow(), &[true, false]);
     }
 
     #[gpui::test]
@@ -588,5 +641,23 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("base-popover-content").is_some());
+    }
+
+    #[gpui::test]
+    fn keyboard_activation_opens_the_popover(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| KeyboardPopoverHarness {
+            trigger_focus: cx.focus_handle(),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.update(|window, cx| {
+            let focus = view.read(cx).trigger_focus.clone();
+            focus.focus(window, cx);
+        });
+        cx.simulate_keystrokes("enter");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(cx.debug_bounds("keyboard-popover-content").is_some());
     }
 }

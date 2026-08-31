@@ -81,6 +81,7 @@ struct SelectOptions {
     icon: Option<Icon>,
     cleanable: bool,
     placeholder: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     title_prefix: Option<SharedString>,
     search_placeholder: Option<SharedString>,
     menu_width: Length,
@@ -99,6 +100,7 @@ impl Default for SelectOptions {
             icon: None,
             cleanable: false,
             placeholder: None,
+            accessibility_label: None,
             title_prefix: None,
             menu_width: Length::Auto,
             menu_max_h: rems(20.).into(),
@@ -311,11 +313,7 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.state.list.update(cx, |list, cx| {
-            if !list.query_input.read(cx).value().is_empty() {
-                list.set_query("", window, cx);
-            }
-        });
+        self.state.clear_query(window, cx);
 
         let selected_index = self
             .state
@@ -508,14 +506,17 @@ where
                             h_flex()
                                 .id("inner")
                                 .w_full()
+                                .min_w_0()
                                 .overflow_hidden()
+                                .whitespace_nowrap()
                                 .items_center()
                                 .justify_between()
                                 .gap_1()
                                 .child(
                                     div()
                                         .id("title")
-                                        .w_full()
+                                        .flex_1()
+                                        .min_w_0()
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .truncate()
@@ -618,6 +619,15 @@ where
     /// Set the placeholder shown when no value is selected.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set the name a screen reader announces for the select.
+    ///
+    /// The placeholder and selected value are not used as the accessible name,
+    /// because they describe the current value rather than the control itself.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.options.accessibility_label = Some(label.into());
         self
     }
 
@@ -742,6 +752,7 @@ where
 {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let disabled = self.options.disabled;
+        let accessibility_label = self.options.accessibility_label.clone();
         let focus_handle = self.state.read(cx).state.focus_handle.clone();
         let empty = self.empty;
         let opts = self.options;
@@ -773,6 +784,9 @@ where
         BaseSelect::new(self.id)
             .open(is_open)
             .disabled(disabled)
+            .when_some(accessibility_label, |this, label| {
+                this.accessibility_label(label)
+            })
             .focus_handle(&focus_handle)
             .content_focus_handle(&content_focus_handle)
             .on_open_change(move |open, _, cx| {
@@ -794,6 +808,36 @@ mod tests {
         searchable_list::{SearchableListDelegate as _, SearchableVec},
         select::{Select, SelectGroup, SelectState},
     };
+
+    #[gpui::test]
+    fn an_explicit_accessibility_label_does_not_replace_the_placeholder(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let items = SearchableVec::new(vec!["Rust", "Go", "C++"]);
+            let state = cx.new(|cx| SelectState::new(items, None, window, cx));
+
+            let plain = Select::new(&state).placeholder("Choose a language");
+            assert_eq!(plain.options.accessibility_label, None);
+            assert_eq!(
+                plain.options.placeholder.as_deref(),
+                Some("Choose a language")
+            );
+
+            let named = Select::new(&state)
+                .placeholder("Choose a language")
+                .accessibility_label("Programming language");
+            assert_eq!(
+                named.options.accessibility_label.as_deref(),
+                Some("Programming language")
+            );
+            assert_eq!(
+                named.options.placeholder.as_deref(),
+                Some("Choose a language"),
+                "an accessible name must not change what is drawn"
+            );
+        });
+    }
 
     #[gpui::test]
     fn test_select_initial_selection_seeds_cursor(cx: &mut TestAppContext) {

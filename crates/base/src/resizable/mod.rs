@@ -149,16 +149,21 @@ impl ResizableState {
 
         // We make sure that the size always sums up to the container size
         // by reducing the size of all other panels first.
-        let container_size = self
-            .container_size_for_panel_count(self.panels.len() + 1)
-            .max(px(1.));
+        let measured_container_size = self.container_size_for_panel_count(self.panels.len() + 1);
+        let container_size = measured_container_size.max(px(1.));
         let total_leftover_size = (container_size - size).max(px(1.));
-        let current_total = self
-            .sizes
-            .iter()
-            .map(|size| size.as_f32())
-            .sum::<f32>()
-            .max(1.0);
+        let current_total = if measured_container_size.is_zero() {
+            // Before first layout the stored sizes are proportional placeholders.
+            // Dividing them by the synthetic one-pixel container preserves those
+            // proportions, including equal flexible slots in a new dock split.
+            container_size.as_f32()
+        } else {
+            self.sizes
+                .iter()
+                .map(|size| size.as_f32())
+                .sum::<f32>()
+                .max(1.0)
+        };
 
         for (i, panel) in self.panels.iter_mut().enumerate() {
             let ratio = self.sizes[i].as_f32() / current_total;
@@ -175,6 +180,47 @@ impl ResizableState {
         };
 
         cx.notify();
+    }
+
+    /// Adopt slot sizes decided by an owner that keeps its own record of the
+    /// layout — the dock's pane tree does.
+    ///
+    /// Unlike [`Self::insert_panel`], nothing is redistributed: the caller has
+    /// already decided how the space divides, and re-normalizing here would
+    /// undo exactly that decision. Slots the caller left unconstrained keep
+    /// whatever they had.
+    pub(crate) fn adopt_sizes(&mut self, sizes: &[Option<Pixels>], cx: &mut Context<Self>) {
+        let mut changed = false;
+        for (ix, size) in sizes.iter().enumerate() {
+            // The preference is mirrored exactly, `None` included. That is the
+            // load-bearing half: `insert_panel` resolves every existing
+            // panel's `None` into a concrete value as a side effect of
+            // redistributing, so after inserting one slot the caller's "these
+            // two are equally unconstrained" has quietly become "that one is
+            // pinned, this one is the only flexible slot" — and the flexible
+            // one then swallows whatever the pinned ones leave over.
+            if let Some(panel) = self.panels.get_mut(ix) {
+                if panel.size != *size {
+                    panel.size = *size;
+                    changed = true;
+                }
+            }
+
+            // The measurement only moves when the tree names a size; an
+            // unconstrained slot keeps whatever it was last laid out at until
+            // the next pass recomputes it.
+            let Some(size) = size else { continue };
+            if let Some(slot) = self.sizes.get_mut(ix) {
+                if *slot != *size {
+                    *slot = *size;
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            cx.notify();
+        }
     }
 
     pub(crate) fn sync_panels_count(
@@ -405,6 +451,17 @@ impl ResizableState {
     /// When the container size changes, the panels should take up the same percentage as they did before.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
+            return;
+        }
+
+        // A panel with no size preference is laid out by flex, and its entry
+        // in `sizes` is a placeholder until something measures it. Rescaling
+        // by a ratio computed from that placeholder drags the panels that
+        // *do* have a preference along with it: a 200px sidebar beside one
+        // flexible panel comes back 587px wide on the frame after the first,
+        // which reads as the layout jumping once for no reason. Flex already
+        // fits the container, so there is nothing here to adjust.
+        if self.panels.iter().any(|panel| panel.size.is_none()) {
             return;
         }
 
@@ -833,5 +890,32 @@ mod tests {
             assert_eq!(state.sizes(), &vec![px(220.), px(180.)]);
         });
         assert_eq!(resizes.get(), 1);
+    }
+
+    struct SizedGroupHarness;
+
+    impl Render for SizedGroupHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(400.))
+                .h(px(100.))
+                .child(
+                    h_resizable("sized-resizable").size(px(40.)).child(
+                        resizable_panel()
+                            .child(div().size_full().debug_selector(|| "sized-panel".into())),
+                    ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn a_group_size_binds_the_cross_axis(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| SizedGroupHarness);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let panel = cx.debug_bounds("sized-panel").unwrap();
+        assert_eq!(panel.size.width, px(400.));
+        assert_eq!(panel.size.height, px(40.));
     }
 }

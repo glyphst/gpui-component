@@ -21,6 +21,7 @@ mod combobox;
 pub mod component_traits;
 mod date_picker;
 mod dialog;
+pub mod dock;
 mod element_ext;
 mod event;
 mod focus_trap;
@@ -48,6 +49,7 @@ mod radio_group;
 mod resizable;
 mod scrollbar;
 mod select;
+mod selectable_text;
 mod sheet;
 pub mod slider;
 mod state_style;
@@ -55,6 +57,7 @@ mod styled;
 mod switch;
 mod table;
 mod tabs;
+pub mod text;
 mod text_boundary;
 mod text_selection;
 mod theme;
@@ -110,12 +113,18 @@ pub use macos_accessibility::install_window_hit_test_forwarder;
 #[doc(hidden)]
 pub use measure::measurement_enabled;
 pub use measure::{Measure, measure, measure_if};
-pub use motion::{Interpolate, Transition, TransitionId, transition};
+pub use motion::{
+    Discrete, DiscreteError, Easing, EasingError, Interpolate, IterationCount, Keyframe,
+    KeyframeError, Keyframes, LinearStop, MotionPhase, MotionReveal, MotionStatus, MotionTransform,
+    MotionValue, PlaybackDirection, Presence, PresencePhase, PresenceSample, SignedDuration,
+    Spring, SpringError, Stagger, StaggerOrigin, StepPosition, Timing, TimingSample, Transition,
+    TransitionId, animate_keyframes, spring, transition, transition_with_status,
+};
 pub use number_input::{
     Decrement, Increment, NumberInput, NumberInputEvent, NumberInputText, NumberStep, StepAction,
     step_value,
 };
-pub use otp_input::{OtpInput, OtpState};
+pub use otp_input::{OtpEvent, OtpInput, OtpState};
 pub use pagination::{Pagination, PaginationItem, PaginationState};
 pub use popover::{Popover, PopoverState};
 pub use popup::{POPUP_PRIORITY, Popup};
@@ -126,14 +135,15 @@ pub use radio_group::RadioGroup;
 #[doc(hidden)]
 pub use resizable::{PANEL_MIN_SIZE, resize_handle};
 pub use resizable::{
-    ResizablePanel, ResizablePanelEvent, ResizablePanelGroup, ResizableState, h_resizable,
-    resizable_panel, v_resizable,
+    ResizablePanel, ResizablePanelEvent, ResizablePanelGroup, ResizableState, ResizeHandleContext,
+    ResizeHandleRenderer, h_resizable, resizable_panel, v_resizable,
 };
 pub use scrollbar::{
     Scrollbar, ScrollbarAxis, ScrollbarEntrance, ScrollbarHandle, ScrollbarMode, ScrollbarMotion,
     ScrollbarStyles, ScrollbarThumbStyle, ScrollbarTrackStyle,
 };
 pub use select::Select;
+pub use selectable_text::SelectableText;
 pub use sheet::Sheet;
 pub use slider::{Slider, SliderIndicator, SliderThumb, SliderTrack};
 pub use state_style::StateStyle;
@@ -145,13 +155,17 @@ pub use switch::{
 };
 pub use table::{Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow};
 pub use tabs::{Tab, TabStyles, Tabs};
+pub use text::{
+    MarkdownExtensions, MarkdownNode, MarkdownPlugin, SelectionFormat, TableData, Text, TextView,
+    TextViewDefaults, TextViewPlugin, TextViewState, TextViewStyle, html, markdown,
+};
 pub use text_selection::{
     TextSelection, TextSelectionContentKey, TextSelectionCoverage, TextSelectionEndpoint,
     TextSelectionEvent, TextSelectionHandle, TextSelectionLayer, TextSelectionProjection,
     TextSelectionRegistration, TextSelectionRun, TextSelectionScopeId, TextSelectionSnapshot,
     TextSelectionWindowPoints,
 };
-pub use theme::{ResizableTheme, ScrollbarTheme, Theme};
+pub use theme::{ResizableTheme, ScrollbarTheme, Theme, ThemeAppearance};
 pub use theme_tokens::{
     ColorTokens, RadiusTokens, SemanticThemeTokens, ShadowTokens, SpacingTokens, TextStyleToken,
     TypographyTokens,
@@ -192,4 +206,5 @@ pub fn init(cx: &mut App) {
     number_input::init(cx);
     input::init(cx);
     tree::init(cx);
+    text::init(cx);
 }

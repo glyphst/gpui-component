@@ -1,3 +1,4 @@
+pub(super) use super::example_rgb;
 use super::*;
 
 mod accordion;
@@ -11,6 +12,8 @@ mod color_picker;
 mod combobox;
 mod date_picker;
 mod dialog;
+mod dock;
+pub(super) use dock::build_dock;
 mod editor;
 mod hover_card;
 mod input;
@@ -32,6 +35,8 @@ mod switch;
 mod table;
 mod tabs;
 mod text_selection;
+mod text_view;
+pub(super) use text_view::MARKDOWN as TEXT_VIEW_MARKDOWN;
 mod textarea;
 mod toast;
 mod toggle;

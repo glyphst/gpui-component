@@ -20,6 +20,35 @@ pub fn resize_handle<T: 'static, E: 'static + Render>(
     ResizeHandle::new(id, axis)
 }
 
+/// Draws the visible part of a resize handle.
+///
+/// Returning `None` keeps the built-in line, so a renderer can override some
+/// handles and leave the rest alone.
+pub type ResizeHandleRenderer =
+    Rc<dyn Fn(&ResizeHandleContext, &mut Window, &mut App) -> Option<AnyElement>>;
+
+/// What a [`ResizeHandleRenderer`] is told about the handle it is drawing.
+///
+/// The hit area, the cursor and the drag itself stay with the handle; a
+/// renderer only supplies what is painted inside it.
+pub struct ResizeHandleContext {
+    axis: Axis,
+    active: bool,
+}
+
+impl ResizeHandleContext {
+    /// The axis the handle resizes along: `Horizontal` for a vertical divider
+    /// between two side-by-side panels.
+    pub fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    /// Whether this handle is the one being dragged right now.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
 #[doc(hidden)]
 pub struct ResizeHandle<T: 'static, E: 'static + Render> {
     id: ElementId,
@@ -29,6 +58,7 @@ pub struct ResizeHandle<T: 'static, E: 'static + Render> {
     placement: Option<Side>,
     on_drag: Option<Rc<dyn Fn(&Point<Pixels>, &mut Window, &mut App) -> Entity<E>>>,
     on_double_click: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    appearance: Option<ResizeHandleRenderer>,
 }
 
 impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
@@ -39,6 +69,7 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
             on_drag: None,
             drag_value: None,
             placement: None,
+            appearance: None,
             axis,
             gap: px(0.),
             on_double_click: None,
@@ -47,6 +78,12 @@ impl<T: 'static, E: 'static + Render> ResizeHandle<T, E> {
 
     pub(crate) fn gap(mut self, gap: Pixels) -> Self {
         self.gap = gap.max(px(0.));
+        self
+    }
+
+    /// Hand the painted part of this handle to `appearance`.
+    pub fn with_appearance(mut self, appearance: ResizeHandleRenderer) -> Self {
+        self.appearance = Some(appearance);
         self
     }
 
@@ -134,11 +171,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
         window.with_element_state(id.unwrap(), |state, window| {
             let state = state.unwrap_or(ResizeHandleState::default());
 
-            let bg_color = if state.is_active() {
-                cx.theme().resizable.active_handle
-            } else {
-                cx.theme().resizable.handle
-            };
+            let bg_color = handle_color(&cx.theme(), state.is_active());
 
             let mut el = div()
                 .id(self.id.clone())
@@ -183,12 +216,30 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                         }),
                 })
                 .child(
-                    div()
-                        .debug_selector(|| indicator_selector.to_string())
-                        .bg(bg_color)
-                        .group_hover("handle", |this| this.bg(bg_color))
-                        .when(axis.is_horizontal(), |this| this.h_full().w(HANDLE_SIZE))
-                        .when(axis.is_vertical(), |this| this.w_full().h(HANDLE_SIZE)),
+                    // A renderer that declines — or is absent — leaves the
+                    // built-in line, so overriding one handle never obliges a
+                    // caller to redraw them all.
+                    self.appearance
+                        .as_ref()
+                        .and_then(|appearance| {
+                            appearance(
+                                &ResizeHandleContext {
+                                    axis,
+                                    active: state.is_active(),
+                                },
+                                window,
+                                cx,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            div()
+                                .debug_selector(|| indicator_selector.to_string())
+                                .bg(bg_color)
+                                .group_hover("handle", |this| this.bg(bg_color))
+                                .when(axis.is_horizontal(), |this| this.h_full().w(HANDLE_SIZE))
+                                .when(axis.is_vertical(), |this| this.w_full().h(HANDLE_SIZE))
+                                .into_any_element()
+                        }),
                 )
                 .into_any_element();
 
@@ -254,6 +305,69 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
             });
 
             ((), state)
+        });
+    }
+}
+
+/// What a resize handle paints, given the active theme.
+///
+/// Projected colors win; without them the handle resolves from the tokens that
+/// already mean these two states everywhere else -- `border` for a divider at
+/// rest, `ring` for the thing the pointer currently owns. Before this the
+/// unprojected answer was `Hsla::default()`, which is transparent, so a
+/// consumer with no styled façade had no divider at all.
+pub(crate) fn handle_color(theme: &crate::Theme, active: bool) -> gpui::Hsla {
+    if active {
+        theme
+            .resizable
+            .active_handle
+            .unwrap_or(theme.tokens.colors.ring)
+    } else {
+        theme.resizable.handle.unwrap_or(theme.tokens.colors.border)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{TestAppContext, hsla};
+
+    use super::handle_color;
+    use crate::{ResizableTheme, Theme};
+
+    #[gpui::test]
+    fn an_unprojected_handle_resolves_from_the_theme_tokens(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let border = hsla(0., 0., 0.5, 1.0);
+            let ring = hsla(0.6, 0.5, 0.5, 1.0);
+            let theme = Theme::global_mut(cx);
+            theme.tokens.colors.border = border;
+            theme.tokens.colors.ring = ring;
+            theme.resizable = ResizableTheme::default();
+
+            let theme = Theme::global(cx);
+            assert_eq!(handle_color(&theme, false), border);
+            assert_eq!(handle_color(&theme, true), ring);
+            // The point of the change: the default used to be transparent, so
+            // a divider with nothing projected onto it was not drawn at all.
+            assert_ne!(handle_color(&theme, false), gpui::Hsla::default());
+        });
+    }
+
+    #[gpui::test]
+    fn a_projected_handle_still_wins(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let projected = hsla(0.3, 0.4, 0.5, 1.0);
+            let active = hsla(0.9, 0.4, 0.5, 1.0);
+            let theme = Theme::global_mut(cx);
+            theme.tokens.colors.border = hsla(0., 0., 0.5, 1.0);
+            theme.resizable = ResizableTheme {
+                handle: Some(projected),
+                active_handle: Some(active),
+            };
+
+            let theme = Theme::global(cx);
+            assert_eq!(handle_color(&theme, false), projected);
+            assert_eq!(handle_color(&theme, true), active);
         });
     }
 }
