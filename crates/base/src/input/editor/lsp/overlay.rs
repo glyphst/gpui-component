@@ -204,7 +204,7 @@ impl InputBaseState<EditorMode> {
         self.replace_text_in_range_silent(Some(utf16_range), &new_text, window, cx);
         self.completion_inserting = false;
         cx.emit(InputEvent::CompletionAccepted {
-            item: item.clone(),
+            item: Box::new(item.clone()),
             replaced_range: replaced_range.clone(),
             inserted_range: replaced_range.start..replaced_range.start + new_text.len(),
         });

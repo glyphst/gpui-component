@@ -1,8 +1,4 @@
-use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
-    Render, StyleRefinement, Styled as _, Window, rems,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     link::Link,
@@ -10,6 +6,10 @@ use gpui_component::{
     shimmer::{ShimmerStyle, ShimmerText},
     spinner::Spinner,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement as _,
+    Render, StyleRefinement, Styled as _, Window, rems,
 };
 use std::time::Duration;
 
@@ -60,7 +60,7 @@ impl Render for MarkerStory {
                     .description(
                         "Choose a plain row, a centered separator, or a bordered boundary.",
                     )
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_4()
                     .child(Marker::new().content(MarkerContent::new().child("Plain status update")))
@@ -80,7 +80,7 @@ impl Render for MarkerStory {
                     .description(
                         "Compose icons, spinners, and labels without a fixed status model.",
                     )
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_3()
                     .child(
@@ -109,7 +109,7 @@ impl Render for MarkerStory {
             .child(
                 section("With icon")
                     .description("Icons can communicate sender activity, notices, and saved items.")
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_3()
                     .child(
@@ -129,7 +129,7 @@ impl Render for MarkerStory {
             .child(
                 section("Loading styles")
                     .description("Choose a spinner or a sweeping, ChatGPT-style text shimmer.")
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_4()
                     .child(
@@ -176,7 +176,7 @@ impl Render for MarkerStory {
                     .description(
                         "Customize timing, highlight width, direction, and playback independently.",
                     )
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_3()
                     .child(
@@ -228,7 +228,7 @@ impl Render for MarkerStory {
             .child(
                 section("Separator")
                     .description("Place a conversation boundary between two semantic lines.")
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_4()
                     .child(
@@ -249,7 +249,7 @@ impl Render for MarkerStory {
             .child(
                 section("Border")
                     .description("Use a bottom edge for an unread or section boundary.")
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_3()
                     .child(
@@ -272,7 +272,7 @@ impl Render for MarkerStory {
                     .description(
                         "Keep external destinations and in-app commands semantically distinct.",
                     )
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .v_flex()
                     .gap_3()
                     .child(
@@ -281,7 +281,7 @@ impl Render for MarkerStory {
                             .content(
                                 MarkerContent::new().child(
                                     Link::new("marker-documentation-link")
-                                        .href("https://longbridge.github.io/gpui-component/")
+                                        .href("https://gpui-kit.com/")
                                         .child("Open the component documentation"),
                                 ),
                             ),
@@ -301,7 +301,7 @@ impl Render for MarkerStory {
             .child(
                 section("Custom style")
                     .description("Caller refinements can replace spacing, color, and surface.")
-                    .w(rems(42.5))
+                    .max_w(rems(42.5))
                     .child(
                         Marker::new()
                             .px_3()

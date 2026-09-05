@@ -122,7 +122,7 @@ pub enum InputEvent {
     /// Both ranges use UTF-8 byte offsets. `replaced_range` refers to the
     /// pre-edit text and `inserted_range` refers to the resulting text.
     CompletionAccepted {
-        item: CompletionItem,
+        item: Box<CompletionItem>,
         replaced_range: Range<usize>,
         inserted_range: Range<usize>,
     },
@@ -313,6 +313,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) display_map: DisplayMap,
     pub(super) undo_manager: UndoManager,
     pub(super) search_session: super::SearchSession,
+    /// Advances every time search is explicitly invoked. See
+    /// [`InputBaseState::search_activation_revision`].
+    pub(super) search_activation_revision: u64,
     pub(super) searchable: bool,
     pub(super) replaceable: bool,
     pub(super) soft_wrap: bool,
@@ -651,6 +654,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             text: "".into(),
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             search_session: super::SearchSession::default(),
+            search_activation_revision: 0,
             searchable: false,
             replaceable: true,
             soft_wrap: true,
@@ -1334,7 +1338,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                     .unwrap_or(min)
                     .clamp(min, max);
                 let current = current.to_string();
-                if self.text.slice(editable_range.clone()).to_string() != current {
+                if self.text.slice(editable_range.clone()) != current {
                     let range_utf16 = self.range_to_utf16(&editable_range);
                     self.replace_text_in_range_silent(Some(range_utf16), &current, window, cx);
                 }

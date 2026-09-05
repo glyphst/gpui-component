@@ -286,12 +286,10 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app_assets"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
  "rust-embed",
 ]
 
@@ -2134,13 +2132,10 @@ checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
 name = "dialog_overlay"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -2747,12 +2742,10 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "focus_trap"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -2846,11 +2839,10 @@ dependencies = [
 
 [[package]]
 name = "fps_monitor"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
- "gpui",
  "gpui-fps",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -3491,7 +3483,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-base"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3528,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-base-examples-wasm"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
@@ -3544,7 +3536,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-component"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3552,8 +3544,8 @@ dependencies = [
  "enum-iterator",
  "gpui",
  "gpui-base",
- "gpui-component-assets",
  "gpui-component-macros",
+ "gpui-kit-assets",
  "gpui_macros",
  "indoc",
  "instant",
@@ -3621,30 +3613,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-component-assets"
-version = "0.5.1"
-dependencies = [
- "anyhow",
- "gpui",
- "log",
- "rust-embed",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "zed-reqwest 0.12.15-zed (git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4)",
-]
-
-[[package]]
 name = "gpui-component-macros"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
+name = "gpui-component-shell"
+version = "0.6.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "gpui-shell",
+ "serde_json",
+]
+
+[[package]]
 name = "gpui-component-story"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3655,14 +3645,9 @@ dependencies = [
  "dirs",
  "fake",
  "getrandom 0.2.17",
- "gpui",
- "gpui-base",
- "gpui-component",
- "gpui-component-assets",
  "gpui-fps",
+ "gpui-kit",
  "gpui-shell",
- "gpui_platform",
- "gpui_web",
  "gtk",
  "itertools 0.14.0",
  "lsp-types 0.97.0",
@@ -3682,15 +3667,12 @@ dependencies = [
 
 [[package]]
 name = "gpui-component-story-web"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
  "gpui-component-story",
- "gpui_platform",
+ "gpui-kit",
  "log",
  "tracing-wasm",
  "wasm-bindgen",
@@ -3698,20 +3680,48 @@ dependencies = [
 
 [[package]]
 name = "gpui-fps"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
+ "core-graphics 0.24.0",
  "gpui",
- "instant",
  "libc",
  "objc2-core-foundation",
  "objc2-io-kit",
  "sysinfo 0.37.2",
+ "uuid",
+ "wayland-client",
+ "web-time",
  "windows 0.58.0",
 ]
 
 [[package]]
+name = "gpui-kit"
+version = "0.6.0"
+dependencies = [
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "gpui-kit-assets",
+ "gpui_platform",
+ "gpui_web",
+]
+
+[[package]]
+name = "gpui-kit-assets"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "log",
+ "rust-embed",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "zed-reqwest",
+]
+
+[[package]]
 name = "gpui-shell"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3740,12 +3750,12 @@ dependencies = [
  "tungstenite",
  "wait-timeout",
  "windows 0.58.0",
- "zed-reqwest 0.12.15-zed (git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4)",
+ "zed-reqwest",
 ]
 
 [[package]]
 name = "gpui-wry"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "gpui",
@@ -4204,12 +4214,10 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello_world"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -4704,13 +4712,10 @@ dependencies = [
 
 [[package]]
 name = "input"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -5593,12 +5598,9 @@ dependencies = [
 
 [[package]]
 name = "markdown_table"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -7972,7 +7974,7 @@ dependencies = [
  "log",
  "regex",
  "tokio",
- "zed-reqwest 0.12.15-zed (git+https://github.com/zed-industries/reqwest.git?rev=33bc764aa15ff7b200bf7c93bd96e24878d53e14)",
+ "zed-reqwest",
 ]
 
 [[package]]
@@ -8073,11 +8075,9 @@ dependencies = [
 
 [[package]]
 name = "root_borderless"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -8872,13 +8872,10 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidebar"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -9429,17 +9426,6 @@ dependencies = [
 
 [[package]]
 name = "system-configuration"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
-dependencies = [
- "bitflags 2.13.1",
- "core-foundation 0.9.4",
- "system-configuration-sys",
-]
-
-[[package]]
-name = "system-configuration"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "501336eb7ba9e417300a6a0fa985721065467aa83a6dcf0422a8e43e4c0328fa"
@@ -9474,15 +9460,12 @@ dependencies = [
 
 [[package]]
 name = "system_monitor"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "battery",
  "core-foundation 0.10.1",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
  "metal",
  "smol",
  "sysinfo 0.37.2",
@@ -9491,11 +9474,9 @@ dependencies = [
 
 [[package]]
 name = "table_in_scrollable"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -9591,25 +9572,19 @@ dependencies = [
 
 [[package]]
 name = "text_max_lines"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
  "reqwest_client",
 ]
 
 [[package]]
 name = "text_selection"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -9943,12 +9918,10 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tooltip_top_edge"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -11198,13 +11171,11 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
+ "gpui-kit",
  "gpui-wry",
- "gpui_platform",
  "gtk",
  "lb-wry",
  "raw-window-handle",
@@ -11472,13 +11443,10 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window_title"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui_platform",
+ "gpui-kit",
 ]
 
 [[package]]
@@ -12496,55 +12464,6 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
- "futures-core",
- "futures-util",
- "h2",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "ipnet",
- "js-sys",
- "log",
- "mime",
- "mime_guess",
- "once_cell",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "system-configuration 0.8.0",
- "tokio",
- "tokio-rustls",
- "tokio-socks",
- "tokio-util",
- "tower 0.5.3",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-streams",
- "web-sys",
- "windows-registry 0.4.0",
-]
-
-[[package]]
-name = "zed-reqwest"
-version = "0.12.15-zed"
-source = "git+https://github.com/zed-industries/reqwest.git?rev=c15662463bda39148ba154100dd44d3fba5873a4#c15662463bda39148ba154100dd44d3fba5873a4"
-dependencies = [
- "base64",
- "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
@@ -12572,7 +12491,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
- "system-configuration 0.6.1",
+ "system-configuration",
  "tokio",
  "tokio-rustls",
  "tokio-socks",
