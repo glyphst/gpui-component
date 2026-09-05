@@ -681,7 +681,8 @@ mod tests {
 
         let number = cx.debug_bounds("setting-number-input-0-0-0").unwrap();
         cx.simulate_click(number.center(), Modifiers::default());
-        cx.simulate_keystrokes("ctrl-a backspace");
+        cx.dispatch_action(crate::input::SelectAll);
+        cx.simulate_keystrokes("backspace");
         cx.simulate_input("1");
         draw(cx);
         assert!((value.get() - 1.09999).abs() < f64::EPSILON);
