@@ -239,7 +239,8 @@ export default class LazyMenu extends View {
     context.simulate_click(point(px(80.), px(120.)), Modifiers::default());
     draw(&mut context);
     draw(&mut context);
-    context.simulate_click(point(px(80.), px(165.)), Modifiers::default());
+    // Click inside Rename, clear of its animated bottom edge and the item gap.
+    context.simulate_click(point(px(80.), px(150.)), Modifiers::default());
     draw(&mut context);
     let selected = tree(&mut context, &view);
     assert!(selected.contains("text \"Choice:rename\""), "{selected}");
