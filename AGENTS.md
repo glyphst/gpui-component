@@ -18,9 +18,14 @@ Use the pinned Rust toolchain. Validate changes with:
 
 ```sh
 cargo fmt --all -- --check
-cargo check -p gpui-component -p gpui-kit-assets -p gpui-fps --all-targets --locked
+cargo check --workspace --all-targets --locked
 cargo test -p gpui-base -p gpui-component -p gpui-fps --lib --locked
 cargo clippy -p gpui-base -p gpui-component -p gpui-kit-assets -p gpui-fps --all-targets --locked -- -D warnings
 ```
+
+The full workspace check also covers shell consumers of native input events.
+It needs the GTK/WebKit development libraries listed in `script/bootstrap` on
+Linux. Script subscriptions remain limited to their named events; Glyphst's
+completion/span metadata is native-only unless an explicit script API is added.
 
 Do not build Nix derivations unless requested. Do not use cua-driver on Niri.

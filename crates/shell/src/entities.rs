@@ -1256,6 +1256,27 @@ fn editor_style() -> InputEditorStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_input_metadata_is_not_a_script_event() {
+        use super::{InputEvent, InputEventName};
+
+        let events = [
+            InputEvent::CompletionAccepted {
+                item: Default::default(),
+                replaced_range: 0..0,
+                inserted_range: 0..0,
+            },
+            InputEvent::SpanHoverChanged {
+                span_range: None,
+                bounds: None,
+            },
+        ];
+        for name in InputEventName::NAMES {
+            let subscription = InputEventName::from_name(name).expect("known script event");
+            assert!(events.iter().all(|event| !subscription.matches(event)));
+        }
+    }
+
     #[gpui::test]
     fn an_input_paints_with_the_palette_that_is_current_not_the_one_it_was_built_under(
         cx: &mut gpui::TestAppContext,

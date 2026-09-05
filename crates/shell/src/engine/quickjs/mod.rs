@@ -3645,6 +3645,10 @@ impl ShellRuntime {
                     payload.set("shift", *shift)?;
                 }
                 InputEvent::Change | InputEvent::Focus | InputEvent::Blur => {}
+                // Glyphst's rich-input metadata is native-only, not a script subscription.
+                InputEvent::CompletionAccepted { .. } | InputEvent::SpanHoverChanged { .. } => {
+                    return Ok(());
+                }
             }
             handler.call::<_, ()>((
                 payload,
